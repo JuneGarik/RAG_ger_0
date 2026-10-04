@@ -129,6 +129,9 @@ ollama:
   # enrichment — шапки чанков при индексации: тысячи вызовов, решает скорость.
   # GigaChat 3.1 Lightning (MoE 10B / 1.8B активных, ~75 ток/с).
   model_enrichment: hf.co/ai-sage/GigaChat3.1-10B-A1.8B-GGUF:Q4_K_M
+  # vision — разбор картинок слайдов при конвертации (П2). Только instruct:
+  # «думающая» qwen3-vl:8b игнорирует think: false.
+  model_vision: qwen3-vl:8b-instruct
   # Qwen3.5 по умолчанию «думает»; рассуждения съедают num_predict.
   think: false
   # Обязательно: дефолт 2048 молча усекает контекст с разделами-образцами.

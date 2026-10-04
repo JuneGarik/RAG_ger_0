@@ -13,8 +13,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from bzpo.parsing.check import DeckCheck, check
 from bzpo.parsing.detect import Detection, detect
@@ -31,6 +33,7 @@ class Conversion:
     check: DeckCheck | None = None
     error: str | None = None
     notes: str = ""
+    vlm_issues: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -39,7 +42,19 @@ class Conversion:
         )
 
 
-def convert(path: Path) -> Conversion:
+def convert(
+    path: Path,
+    *,
+    vlm: bool = False,
+    cache_dir: Path = Path("data/cache"),
+    progress: Callable[[int, int, int], None] = lambda done, total, slide: None,
+    only_slides: set[int] | None = None,
+) -> Conversion:
+    """Файл -> md. `vlm=True` — с разбором изображений моделью (pptx, ~25 с на слайд).
+
+    `progress(сделано, всего, номер слайда)` вызывается после каждого слайда;
+    `only_slides` — разобрать только эти слайды (для пробы и отладки).
+    """
     detection = detect(path)
     if not detection.supported:
         return Conversion(path, detection, None, error=detection.method)
@@ -48,11 +63,15 @@ def convert(path: Path) -> Conversion:
         from bzpo.parsing import pptx
 
         deck = pptx.extract(path)
+        notes = f"{len(deck.slides)} слайдов"
+        issues: list[str] = []
+        if vlm:
+            done, issues = _vision_pass(deck, path, cache_dir, progress, only_slides)
+            notes += f"; разобрано моделью: {done}"
         markdown = pptx.to_markdown(deck)
         return Conversion(path, detection, markdown,
-                          needs_vlm=sum(s.needs_vlm for s in deck.slides),
-                          check=check(path, markdown),
-                          notes=f"{len(deck.slides)} слайдов")
+                          needs_vlm=sum(s.needs_vlm and not s.vlm_done for s in deck.slides),
+                          check=check(path, markdown), notes=notes, vlm_issues=issues)
 
     if detection.format == "docx":
         from bzpo.parsing import docx
@@ -82,3 +101,33 @@ def sources(directory: Path) -> list[Path]:
         p for p in directory.iterdir()
         if p.is_file() and p.suffix.lower() in SOURCE_SUFFIXES and not p.name.startswith("~$")
     )
+
+
+def _vision_pass(
+    deck: Any, path: Path, cache_dir: Path,
+    progress: Callable[[int, int, int], None], only_slides: set[int] | None,
+) -> tuple[int, list[str]]:
+    """Рендер + модель по слайдам, которым нужен разбор; вернуть число и замечания."""
+    from bzpo.config import load_config
+    from bzpo.parsing import vlm
+    from bzpo.parsing.render import render_pages
+    from bzpo.providers.ollama import OllamaClient
+
+    pages = render_pages(path, cache_dir / "render")
+    if len(pages) != len(deck.slides):
+        # Скрытые слайды LibreOffice может не выводить — сопоставление съедет.
+        return 0, [f"страниц в рендере {len(pages)}, слайдов {len(deck.slides)}: "
+                   "разбор изображений пропущен"]
+    targets = [s for s in deck.slides if s.needs_vlm
+               and (only_slides is None or s.number in only_slides)]
+    settings = load_config()
+    issues: list[str] = []
+    with OllamaClient(settings.ollama, role="vision") as client:
+        for done, slide in enumerate(targets, start=1):
+            result = vlm.analyze(slide, pages[slide.number - 1], client, cache_dir / "vlm",
+                                 client.model)
+            vlm.apply(slide, result)
+            slide.vlm_done = True
+            issues += [f"слайд {slide.number}: {issue}" for issue in result.issues]
+            progress(done, len(targets), slide.number)
+    return len(targets), issues

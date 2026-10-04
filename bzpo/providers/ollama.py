@@ -104,6 +104,7 @@ class OllamaClient:
         json_format: bool = False,
         stop: list[str] | None = None,
         system: str | None = None,
+        images: list[str] | None = None,
     ) -> Generation:
         """Один синхронный вызов генерации.
 
@@ -118,6 +119,9 @@ class OllamaClient:
         payload = self._payload(prompt, temperature=temperature, seed=seed,
                                 num_predict=num_predict, json_format=json_format,
                                 stop=stop, system=system)
+        if images:
+            # Картинки в base64 — для мультимодальной модели (роль vision).
+            payload["images"] = images
         data = self._post(GENERATE_PATH, payload)
         return self._parse(data)
 

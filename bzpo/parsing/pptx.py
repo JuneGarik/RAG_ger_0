@@ -26,9 +26,14 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from bzpo.parsing import charts, heatmap
 from bzpo.parsing.common import cell_text, clean, rows_to_markdown, yaml_string
 
 CONVERTER_VERSION = "pptx-xml-1"
+HEATMAP_NOTE = ("*Значения ячеек восстановлены по цвету заливки и легенде слайда "
+                "(кодом, по XML).*")
+LEGEND_CHART_NOTE = ("*Подписи рядов и категорий сопоставлены с легендой слайда по цвету "
+                     "(кодом, по XML).*")
 UNNAMED_CHART_NOTE = ("*Подписи рядов и категорий заданы на слайде отдельными надписями — "
                       "сопоставление по расположению (этап П2).*")
 
@@ -52,6 +57,10 @@ class SlideData:
     images: list[str] = field(default_factory=list)
     notes: str | None = None
     words: int = 0
+    # Заполняет проход модели (parsing/vlm.py); интерпретация, не цитируется.
+    key_message: str | None = None
+    visual: str | None = None
+    vlm_done: bool = False
 
     @property
     def slide_type(self) -> str:
@@ -91,7 +100,8 @@ def extract(path: Path) -> DeckData:
         title_shape = slide.shapes.title
         title = _text_frame(title_shape.text_frame) if title_shape is not None else ""
         title = title.replace("\n", " ")
-        shapes = [s for s in _flatten(slide.shapes) if s is not title_shape]
+        title_element = title_shape._element if title_shape is not None else None
+        shapes = [s for s in _flatten(slide.shapes) if s.raw._element is not title_element]
         if not title:
             title = next((_text_frame(s.text_frame).replace("\n", " ") for s in _ordered(shapes)
                           if _has_text(s)), f"Слайд {number}")
@@ -129,8 +139,11 @@ def extract(path: Path) -> DeckData:
                 subsection = label
         data = SlideData(number, slide._element.get("show") == "0", title, section, subsection)
         seen: set[str] = {title}
+        legend = heatmap.legend(
+            slide.shapes, lambda s: _text_frame(s.text_frame) if _has_text(s) else ""
+        )
         for shape in _ordered(shapes):
-            _render_shape(shape, data, seen)
+            _render_shape(shape, data, seen, legend, shapes)
         if slide.has_notes_slide:
             data.notes = clean(slide.notes_slide.notes_text_frame.text) or None
         data.words = sum(len(b.split()) for b in data.blocks)
@@ -155,7 +168,8 @@ def to_markdown(deck: DeckData, *, source_name: str | None = None) -> str:
         f"converted_at: {date.today().isoformat()}",
         f"slides_total: {len(deck.slides)}",
         f'speaker_notes: "{"есть" if notes else "в исходном файле отсутствуют"}"',
-        f"needs_vlm: {sum(s.needs_vlm for s in deck.slides)}",
+        f"needs_vlm: {sum(s.needs_vlm and not s.vlm_done for s in deck.slides)}",
+        f"vlm_slides: {sum(s.vlm_done for s in deck.slides)}",
         "---",
         "",
         f"# {deck.title}",
@@ -168,8 +182,17 @@ def to_markdown(deck: DeckData, *, source_name: str | None = None) -> str:
         if s.subsection:
             body.append(f"**Подраздел:** {s.subsection}")
         body.append(f"**Тип слайда:** {s.slide_type}" + (" (скрытый)" if s.hidden else ""))
-        body.append("**Источник значений:** xml" + ("; нужен разбор изображения" if s.needs_vlm
-                                                    else ""))
+        if s.key_message:
+            body.append(f"**Ключевой посыл:** {s.key_message}")
+        if s.visual:
+            body.append(f"**Визуал:** {s.visual}")
+        if s.vlm_done:
+            provenance = "xml; изображение разобрано моделью"
+        elif s.needs_vlm:
+            provenance = "xml; нужен разбор изображения"
+        else:
+            provenance = "xml"
+        body.append(f"**Источник значений:** {provenance}")
         body.append("")
         body += [block for b in s.blocks for block in (b, "")]
         if s.notes:
@@ -181,19 +204,65 @@ def to_markdown(deck: DeckData, *, source_name: str | None = None) -> str:
 # --------------------------------------------------------------- фигуры
 
 
-def _flatten(shapes: Any) -> list[Any]:
-    """Все фигуры слайда; группы разворачиваются рекурсивно."""
+class _Placed:
+    """Фигура с координатами на слайде.
+
+    python-pptx отдаёт координаты фигур внутри группы в системе группы
+    (`a:chOff`/`a:chExt`), а не слайда: три легенды на слайде 41 ДЕВ «стоят» в
+    одной точке. Здесь координаты пересчитаны в систему слайда с учётом
+    вложенных групп; остальное делегируется исходной фигуре.
+    """
+
+    __slots__ = ("raw", "left", "top", "width", "height")
+
+    def __init__(self, raw: Any, left: int, top: int, width: int, height: int) -> None:
+        self.raw, self.left, self.top, self.width, self.height = raw, left, top, width, height
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.raw, name)
+
+
+_Transform = tuple[float, float, float, float, float, float]  # off x/y, масштаб x/y, chOff x/y
+_IDENTITY: _Transform = (0.0, 0.0, 1.0, 1.0, 0.0, 0.0)
+
+
+def _flatten(shapes: Any, transform: _Transform = _IDENTITY) -> list[Any]:
+    """Все фигуры слайда в координатах слайда; группы разворачиваются рекурсивно."""
     from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-    result = []
+    ox, oy, sx, sy, cx, cy = transform
+
+    def place(x: int | None, y: int | None, w: int | None, h: int | None) -> tuple[int, ...]:
+        return (round(ox + ((x or 0) - cx) * sx), round(oy + ((y or 0) - cy) * sy),
+                round((w or 0) * sx), round((h or 0) * sy))
+
+    result: list[Any] = []
     for shape in shapes:
         if _SKIP_SHAPE.search(shape.name or ""):
             continue
+        left, top, width, height = place(shape.left, shape.top, shape.width, shape.height)
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            result += _flatten(shape.shapes)
+            child = _group_child_space(shape)
+            if child is None:
+                result += _flatten(shape.shapes, transform)
+                continue
+            ch_x, ch_y, ch_w, ch_h = child
+            inner = (left, top, width / ch_w if ch_w else 1.0, height / ch_h if ch_h else 1.0,
+                     ch_x, ch_y)
+            result += _flatten(shape.shapes, inner)
         else:
-            result.append(shape)
+            result.append(_Placed(shape, left, top, width, height))
     return result
+
+
+def _group_child_space(group: Any) -> tuple[int, int, int, int] | None:
+    """chOff и chExt группы — система координат её детей."""
+    off = group._element.xpath("./p:grpSpPr/a:xfrm/a:chOff")
+    ext = group._element.xpath("./p:grpSpPr/a:xfrm/a:chExt")
+    if not off or not ext:
+        return None
+    return (int(off[0].get("x", 0)), int(off[0].get("y", 0)),
+            int(ext[0].get("cx", 0)), int(ext[0].get("cy", 0)))
 
 
 def _ordered(shapes: list[Any]) -> list[Any]:
@@ -203,14 +272,19 @@ def _ordered(shapes: list[Any]) -> list[Any]:
     return sorted(shapes, key=lambda s: ((s.top or 0) // band, s.left or 0))
 
 
-def _render_shape(shape: Any, data: SlideData, seen: set[str]) -> None:
+def _render_shape(
+    shape: Any, data: SlideData, seen: set[str], legend: list[heatmap.LegendItem],
+    shapes: list[Any],
+) -> None:
     if getattr(shape, "has_table", False) and shape.has_table:
         data.tables += 1
-        data.blocks.append(_table(shape.table))
+        data.blocks.append(_table(shape.table, legend))
         return
     if getattr(shape, "has_chart", False) and shape.has_chart:
         data.charts += 1
-        data.blocks.append(_chart(shape.chart))
+        names = charts.labels(shape, shapes,
+                              lambda s: _text_frame(s.text_frame) if _has_text(s) else "")
+        data.blocks.append(_chart(shape.chart, names))
         return
     if _is_picture(shape):
         alt = (shape._element.xpath(".//p:cNvPr/@descr") or [""])[0].strip()
@@ -261,7 +335,7 @@ def _text_frame(frame: Any) -> str:
     return "\n".join(lines)
 
 
-def _table(table: Any) -> str:
+def _table(table: Any, legend: list[heatmap.LegendItem]) -> str:
     rows = []
     for row in table.rows:
         cells = []
@@ -271,10 +345,16 @@ def _table(table: Any) -> str:
                 continue
             text = cell_text(cell.text)
             if not text:
-                color = _fill_color(cell)
-                text = f"■ #{color}" if color else ""
+                color = heatmap.shape_fill(cell)
+                text = "" if color is None else (
+                    f"■ {color}" if color == heatmap.THEME else f"■ #{color}")
             cells.append(text)
         rows.append(cells)
+    mapped = heatmap.map_cells(rows, legend) if legend else None
+    if mapped is not None:
+        return HEATMAP_NOTE + "\n" + rows_to_markdown(mapped)
+    # Цвет темы без легенды ничего не значит — обычная пустая ячейка.
+    rows = [[c if c != f"■ {heatmap.THEME}" else "" for c in row] for row in rows]
     return rows_to_markdown(rows)
 
 
@@ -291,18 +371,7 @@ def _is_picture(shape: Any) -> bool:
     return bool(shape._element.xpath("./p:blipFill"))
 
 
-def _fill_color(cell: Any) -> str | None:
-    """Сплошная заливка ячейки (RGB); цвет темы без RGB — None."""
-    try:
-        fill = cell.fill
-        if fill.type == 1:  # MSO_FILL.SOLID
-            return str(fill.fore_color.rgb)
-    except (AttributeError, TypeError, ValueError):
-        return None
-    return None
-
-
-def _chart(chart: Any) -> str:
+def _chart(chart: Any, names: charts.ChartLabels | None = None) -> str:
     title = ""
     if chart.has_title and chart.chart_title.has_text_frame:
         title = clean(chart.chart_title.text_frame.text)
@@ -310,21 +379,35 @@ def _chart(chart: Any) -> str:
     columns: list[tuple[str, list[Any]]] = []
     for plot in chart.plots:
         if not categories:
-            categories = [clean(str(c)) for c in plot.categories]
+            # Пустая категория приходит как None — это не подпись «None».
+            categories = [clean(str(c)) if c not in (None, "") else "" for c in plot.categories]
         for series in plot.series:
-            name = clean(series.name or "") or f"ряд {len(columns) + 1}"
-            columns.append((name, list(series.values)))
+            columns.append((clean(series.name or ""), list(series.values)))
     if not columns:
         return ""
-    unnamed = not categories or all(n.startswith("ряд ") for n, _ in columns)
+    from_legend = False
+    # think-cell: подписи — отдельные надписи на слайде, сопоставленные по цвету (charts.py).
+    if names is not None and names.series and len(names.series) == len(columns) \
+            and not any(name for name, _ in columns):
+        columns = [(cell_text(n), v) for n, (_, v) in zip(names.series, columns, strict=True)]
+        from_legend = True
     size = max([len(categories)] + [len(v) for _, v in columns])
+    if names is not None and names.categories and len(names.categories) == size \
+            and not any(categories):
+        categories = [cell_text(c) for c in names.categories]
+        from_legend = True
+    columns = [(name or f"ряд {i + 1}", v) for i, (name, v) in enumerate(columns)]
+    unnamed = not any(categories) or any(n.startswith("ряд ") for n, _ in columns)
     categories += [""] * (size - len(categories))
     head = ["Категория"] + [name for name, _ in columns]
     lines = [f"**Диаграмма{': ' + title if title else ''}** (значения из данных диаграммы)",
              "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    notes = []
+    if from_legend:
+        notes.append(LEGEND_CHART_NOTE)
     if unnamed:
-        # think-cell: подписи рядов и категорий — отдельные надписи на слайде.
-        lines.insert(1, UNNAMED_CHART_NOTE)
+        notes.append(UNNAMED_CHART_NOTE)
+    lines[1:1] = notes
     for i in range(size):
         row = [categories[i] or str(i + 1)]
         row += [_number(values[i]) if i < len(values) else "" for _, values in columns]

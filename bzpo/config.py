@@ -230,7 +230,7 @@ class LocalModelsConfig(_Section):
     query_cache_size: Annotated[int, Field(ge=0)] = 4096
 
 
-OllamaRole = Literal["query", "enrichment"]
+OllamaRole = Literal["query", "enrichment", "vision"]
 
 
 class OllamaConfig(_Section):
@@ -252,6 +252,10 @@ class OllamaConfig(_Section):
     # GigaChat 3.1 Lightning: MoE 10B, 1.8B активных, Q4_K_M ~6.5 ГБ, ~75 ток/с.
     # Шапку чанка пишет точно и втрое быстрее. Тег — прямая загрузка GGUF с HF.
     model_enrichment: str = "hf.co/ai-sage/GigaChat3.1-10B-A1.8B-GGUF:Q4_K_M"
+    # vision — разбор картинок слайдов при конвертации (docs/PARSING_PLAN.md, П2).
+    # Версия instruct: «думающая» qwen3-vl:8b игнорирует think=false и тратит
+    # весь лимит на рассуждения.
+    model_vision: str = "qwen3-vl:8b-instruct"
     # Qwen3.5 по умолчанию «думает»: скрытые рассуждения съедают num_predict и
     # бюджет латентности. Модели без режима рассуждений значение игнорируют.
     think: bool = False
@@ -267,7 +271,8 @@ class OllamaConfig(_Section):
     timeout_read: Annotated[float, Field(gt=0.0)] = 180.0
 
     def model_for(self, role: OllamaRole) -> str:
-        return self.model_query if role == "query" else self.model_enrichment
+        return {"query": self.model_query, "enrichment": self.model_enrichment,
+                "vision": self.model_vision}[role]
 
 
 class DatabaseConfig(_Section):

@@ -31,6 +31,9 @@ _WORD = re.compile(r"[A-Za-zА-Яа-яЁё]{3,}")
 _INTERPRETATION = re.compile(
     r"^\*\*(Ключевой посыл|Визуал|Тип слайда|Раздел|Подраздел|Источник значений):\*\*.*$", re.M
 )
+# Текст, распознанный моделью с картинки, в XML отсутствует по определению:
+# его числа не «без опоры», а помечены как распознанные и проверяются человеком.
+_IMAGE_TEXT = re.compile(r"^\*\*Текст с изображения[^\n]*$", re.M)
 _SLIDE_REF = re.compile(r"\[Слайд \d+\]|слайд[а-яё]*\s+\d+(?:\s*[–-]\s*\d+)?|<!--.*?-->", re.I)
 # Не данные: адреса ссылок, цвета ячеек тепловых карт («■ #54CFD6»), подписи
 # картинок (имя фигуры и alt-текст, а не текст слайда).
@@ -110,6 +113,7 @@ def _check_slide(
     for value in values:
         allowed |= _numbers(value) | _rounded(value)
     checked = _NOT_DATA.sub(" ", _SLIDE_REF.sub(" ", _INTERPRETATION.sub(" ", block)))
+    checked = _IMAGE_TEXT.sub(" ", checked)
     unsupported = sorted(n for n in _numbers(checked) - allowed if not _trivial(n))
     return SlideCheck(number, len(paragraphs), covered, unsupported, missing, images)
 

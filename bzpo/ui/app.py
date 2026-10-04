@@ -463,9 +463,10 @@ def show_check(result: DeckCheck, markdown: str, needs_vlm: int) -> None:
 def tab_conversion() -> None:
     st.header("Конвертация в md")
     st.caption("Формат определяется по содержимому файла, способ разбора выбирается сам: "
-               "pptx — текст, таблицы и данные диаграмм из XML с проверкой; docx — заголовки, "
-               "абзацы, таблицы, рисунки (похожие на скриншоты слайдов отмечаются); готовый md "
-               "— проверка разметки. Картинки и значения цветом разберёт модель на этапе П2.")
+               "pptx — текст, таблицы, данные диаграмм, подписи по легенде и значения тепловых "
+               "карт из XML с проверкой; docx — заголовки, абзацы, таблицы, рисунки (похожие на "
+               "скриншоты слайдов отмечаются); готовый md — проверка разметки. Картинки по "
+               "желанию разбирает модель.")
     files = sources(SAMPLES)
     if not files:
         st.info("В data/samples нет файлов. Добавьте их на вкладке «Документы».")
@@ -479,8 +480,20 @@ def tab_conversion() -> None:
         width="stretch", hide_index=True,
     )
     source = st.selectbox("Файл", files, format_func=lambda p: p.name)
+    with_vlm = st.checkbox(
+        "Разобрать изображения моделью (pptx: ~20 с на слайд, нужен LibreOffice)",
+        help="Qwen3-VL пишет ключевой посыл, визуал и текст с картинок для слайдов, которые "
+             "код прочитать не может. Тепловые карты и подписи диаграмм определяет код по XML "
+             "— модель на них ошибалась. Ответы кэшируются: повторный запуск быстрый.",
+    )
     if st.button("Конвертировать", type="primary"):
-        result = convert(source)
+        bar = st.progress(0.0, text="Разбор файла…") if with_vlm else None
+
+        def on_slide(done: int, total: int, slide: int) -> None:
+            if bar is not None:
+                bar.progress(done / total, text=f"Модель: слайд {slide} ({done} из {total})")
+
+        result = convert(source, vlm=with_vlm, cache_dir=DATA / "cache", progress=on_slide)
         target = None
         if result.markdown is not None and result.detection.format in ("pptx", "docx"):
             DRAFTS_CONVERTED.mkdir(parents=True, exist_ok=True)
@@ -504,6 +517,9 @@ def tab_conversion() -> None:
     if result.needs_vlm:
         st.info(f"Разбор изображений (этап П2) понадобится: {result.needs_vlm} — до него "
                 "содержимое картинок и тепловых карт в поиске не участвует.")
+    if result.vlm_issues:
+        with st.expander(f"Замечания к ответам модели: {len(result.vlm_issues)}"):
+            st.markdown("\n".join(f"- {issue}" for issue in result.vlm_issues))
     if result.check is not None:
         show_check(result.check, result.markdown, result.needs_vlm)
     markdown = result.markdown

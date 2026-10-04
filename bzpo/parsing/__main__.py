@@ -2,6 +2,7 @@
 
     python -m bzpo.parsing convert data/samples/файл.pptx|.docx|.md [--out data/converted]
     python -m bzpo.parsing convert data/samples              # все исходники папки
+    python -m bzpo.parsing convert отчёт.pptx --vlm          # + разбор изображений моделью
     python -m bzpo.parsing check data/samples/отчёт.pptx data/samples/отчёт.md
 
 Формат определяется по содержимому файла (bzpo/parsing/detect.py), способ
@@ -29,8 +30,12 @@ def report(result: DeckCheck) -> None:
     print("  проверка: " + ("ПРОЙДЕНА" if result.passed else "НЕ ПРОЙДЕНА"))
 
 
-def convert_one(path: Path, out: Path) -> bool:
-    result = convert(path)
+def convert_one(path: Path, out: Path, vlm: bool = False) -> bool:
+    result = convert(
+        path, vlm=vlm,
+        progress=lambda done, total, slide: print(f"  модель: {done}/{total} (слайд {slide})",
+                                                   flush=True),
+    )
     print(f"{path.name}: {result.detection.method}")
     if result.markdown is None:
         print(f"  ✗ {result.error}")
@@ -42,6 +47,8 @@ def convert_one(path: Path, out: Path) -> bool:
         print(f"  -> {target} ({result.notes}; разбор изображений нужен: {result.needs_vlm})")
     else:
         print(f"  уже md: {result.notes}")
+    for issue in result.vlm_issues:
+        print(f"  ⚠ {issue}")
     if result.check is not None:
         report(result.check)
     return result.ok
@@ -53,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("convert", help="файл или папка -> md, формат определяется сам")
     c.add_argument("path", type=Path)
     c.add_argument("--out", type=Path, default=Path("data/converted"))
+    c.add_argument("--vlm", action="store_true",
+                   help="с разбором изображений моделью (pptx; ~20 с на слайд, нужен LibreOffice)")
     k = sub.add_parser("check", help="проверить готовый md против pptx")
     k.add_argument("pptx", type=Path)
     k.add_argument("md", type=Path)
@@ -63,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         report(result)
         return 0 if result.passed else 1
     paths = sources(args.path) if args.path.is_dir() else [args.path]
-    results = [convert_one(path, args.out) for path in paths]
+    results = [convert_one(path, args.out, args.vlm) for path in paths]
     return 0 if all(results) else 1
 
 
