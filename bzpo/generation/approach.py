@@ -323,7 +323,7 @@ def render(section: Section) -> str:
     for n in section.cited:
         hit = by_number[n].hit
         key = (hit.chunk.doc_title, hit.chunk.project, hit.customer)
-        documents.setdefault(key, []).append(f"[{n}] слайд {hit.chunk.page}")
+        documents.setdefault(key, []).append(f"[{n}] {hit.chunk.locator}")
     for (title, project, customer), refs in documents.items():
         lines.append(f"- {title} — проект «{project}», заказчик: {customer}: {'; '.join(refs)}")
     if not section.cited:
@@ -358,7 +358,7 @@ def facet_label(facet: str) -> str:
 def _fragment_text(number: int, hit: SearchHit) -> str:
     c = hit.chunk
     label = (f"[{number}] Проект «{c.project}»; заказчик: {hit.customer}; "
-             f"{c.doc_title}, слайд {c.page}; раздел: {c.section_title}")
+             f"{c.doc_title}, {c.locator}; раздел: {c.section_title}")
     return f"{label}\n{linearize_wide_tables(c.text_raw)}"
 
 

@@ -171,7 +171,7 @@ class ChunkRow:
     ord: int
     section_title: str | None
     subsection_title: str | None
-    page: int
+    page: int | None
     text_raw: str
     text_enriched: str
     content_hash: str
@@ -319,6 +319,13 @@ class ChunkHit:
     client: str | None
     anon_label: str | None
     project: str | None = None
+
+    @property
+    def locator(self) -> str:
+        """Где в документе: «слайд N» для презентаций, раздел — для документов."""
+        if self.page is not None:
+            return f"слайд {self.page}"
+        return f"раздел «{self.section_title}»" if self.section_title else "без раздела"
 
 
 def fetch_chunks(conn: Any, chunk_ids: Sequence[str]) -> dict[str, ChunkHit]:

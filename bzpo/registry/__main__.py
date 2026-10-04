@@ -17,7 +17,9 @@ from datetime import date
 from pathlib import Path
 
 from bzpo.config import load_config
+from bzpo.ingest.document import chunk_document
 from bzpo.ingest.slides import chunk_slides, is_slide_markdown
+from bzpo.parsing.convert import convert
 from bzpo.providers.ollama import OllamaClient
 from bzpo.registry.draft import (
     apply_team_table,
@@ -45,10 +47,18 @@ def _count(text: str) -> int:
 
 
 def draft(md_path: Path, registry: Path, data_root: Path) -> int:
-    text = md_path.read_text(encoding="utf-8")
-    if not is_slide_markdown(text):
-        print(f"{md_path}: не размеченная презентация (нет меток <!-- slide: N -->)")
+    """Черновик строки реестра по файлу любого поддерживаемого формата.
+
+    Формат определяется по содержимому: pptx и docx конвертируются на лету,
+    md берётся как есть. Для документа без слайдов «слайдами» для модели
+    служат фрагменты разделов.
+    """
+    conversion = convert(md_path)
+    if conversion.markdown is None:
+        print(f"{md_path}: {conversion.error}")
         return 2
+    text = conversion.markdown
+    print(f"формат: {conversion.detection.method}")
     file = file_key(md_path.resolve().relative_to(data_root.resolve()).as_posix())
     try:
         ensure_not_registered(registry, file)
@@ -56,7 +66,12 @@ def draft(md_path: Path, registry: Path, data_root: Path) -> int:
         print(f"пропущено: {exc}")
         return 1
     config = load_config()
-    deck = chunk_slides(text, _count, hard_limit=config.chunking.chunk_hard_limit_embed)
+    if is_slide_markdown(text):
+        deck = chunk_slides(text, _count, hard_limit=config.chunking.chunk_hard_limit_embed)
+    else:
+        deck = chunk_document(text, _count, target=config.chunking.chunk_target,
+                              minimum=config.chunking.chunk_min,
+                              hard_limit=config.chunking.chunk_hard_limit_embed)
     context = select_context(deck, _count, CONTEXT_BUDGET)
     print(f"слайды для модели: {sorted(context.slides)}; генерация займёт 1–2 минуты…")
 

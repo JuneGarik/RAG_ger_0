@@ -59,12 +59,16 @@ class SlideChunk:
     text_enriched: str
     token_count: int
     is_table: bool
+    # Номер слайда или страницы для ссылки в «Источниках»; None — документ без
+    # рендеринга страниц (ссылка тогда по разделу, SPEC 4.2).
+    page: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class SlideDeck:
     meta: dict[str, Any]
     chunks: list[SlideChunk]
+    kind: str = "slides"  # slides | document
 
     @property
     def max_tokens(self) -> int:
@@ -180,6 +184,7 @@ def _parse_slide(number: int, block: str, doc_prefix: str) -> SlideChunk:
         text_enriched=text_enriched,
         token_count=0,
         is_table=len(_TABLE_ROW.findall(content)) >= 2,
+        page=number,
     )
 
 

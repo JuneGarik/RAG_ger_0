@@ -22,7 +22,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from bzpo.config import Settings
+from bzpo.ingest.document import chunk_document
 from bzpo.ingest.slides import chunk_slides, is_slide_markdown
+from bzpo.parsing.convert import convert
 from bzpo.providers.base import Embedder
 from bzpo.storage import repo
 
@@ -75,11 +77,14 @@ def index_documents(
     for document in report.documents:
         key = data_root_key(document.file)
         raw = document.file.read_bytes()
-        text = raw.decode("utf-8")
         file_hash = hashlib.sha256(raw).hexdigest()
-        if not is_slide_markdown(text):
-            stats.failed[key] = "не размеченная презентация: другие форматы пока не поддержаны"
+        # Формат определяется по содержимому: md индексируется как есть, pptx и
+        # docx конвертируются на лету тем же конвертером, что и в интерфейсе.
+        conversion = convert(document.file)
+        if conversion.markdown is None:
+            stats.failed[key] = conversion.error or "не удалось получить md"
             continue
+        text = conversion.markdown
 
         doc_id, previous_hash = repo.upsert_document(
             conn, project_code=document.project_code, file_key=key, title=document.title,
@@ -94,16 +99,23 @@ def index_documents(
         project = projects[document.project_code]
         label = project.anon_label if project.publicity == "anon" else project.client
         try:
-            deck = chunk_slides(
-                text, count_tokens, hard_limit=settings.chunking.chunk_hard_limit_embed,
-                customer_label=label,
-            )
+            if is_slide_markdown(text):
+                deck = chunk_slides(
+                    text, count_tokens, hard_limit=settings.chunking.chunk_hard_limit_embed,
+                    customer_label=label,
+                )
+            else:
+                deck = chunk_document(
+                    text, count_tokens, target=settings.chunking.chunk_target,
+                    minimum=settings.chunking.chunk_min,
+                    hard_limit=settings.chunking.chunk_hard_limit_embed, customer_label=label,
+                )
             enriched = embedder.embed([c.text_enriched for c in deck.chunks])
             plain = embedder.embed([c.text_raw for c in deck.chunks])
             rows = [
                 repo.ChunkRow(
                     ord=c.slide, section_title=c.section, subsection_title=c.subsection,
-                    page=c.slide, text_raw=c.text_raw, text_enriched=c.text_enriched,
+                    page=c.page, text_raw=c.text_raw, text_enriched=c.text_enriched,
                     content_hash=hashlib.sha256(c.text_raw.encode()).hexdigest(),
                     embedding=e, embedding_raw=r, token_count=c.token_count, is_table=c.is_table,
                 )

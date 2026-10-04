@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     for n, hit in enumerate(result.hits, 1):
         c = hit.chunk
         lists = ", ".join(f"{name.split(':')[0]}#{rank}" for name, rank in hit.lists.items())
-        print(f"\n[{n}] {c.doc_title} — слайд {c.page} ({hit.customer})")
+        print(f"\n[{n}] {c.doc_title} — {c.locator} ({hit.customer})")
         print(f"    раздел: {c.section_title}")
         print(f"    реранкер {hit.rerank_score:.3f} | итог {hit.score:.3f} "
               f"| буст {'+'.join(hit.boost) or '—'} | списки: {lists}")
