@@ -30,6 +30,18 @@ from bzpo.search.query import SearchHit
 
 SYSTEM_PROMPT = Path(__file__).parent / "prompts" / "approach_system.txt"
 
+# Грань -> (название для человека, что ищем). Порядок — порядок вывода в интерфейсе.
+FACET_LABELS: dict[str, tuple[str, str]] = {
+    "understanding": ("Понимание задачи",
+                      "Цели, задачи и исходную ситуацию заказчиков в похожих проектах"),
+    "methodology": ("Методология",
+                    "Какими методами работали: интервью, опросы, оценки, бенчмаркинг"),
+    "stages": ("Этапы", "Из каких этапов состояли проекты и в какой последовательности"),
+    "artifacts": ("Артефакты", "Что передавали заказчику: отчёты, модели, стратегии, планы"),
+    "risks": ("Риски", "Барьеры, ограничения и риски, с которыми сталкивались"),
+    "outcome": ("Результат", "Выводы, рекомендации и достигнутый эффект"),
+}
+
 FACETS: dict[str, str] = {
     "understanding": "цели, задачи и исходная ситуация заказчика",
     "methodology": "методы и инструменты: интервью, опросы, оценка, бенчмаркинг",
@@ -57,6 +69,12 @@ class ApproachRequest:
     area: str | None = None
     situation: str | None = None
 
+    def __post_init__(self) -> None:
+        # Пустая цель даёт подзапросы вида «: риски…» — поиск отвечает мусором
+        # с низкими оценками, а генерация всё равно идёт. Лучше упасть сразу.
+        if not self.goal or not self.goal.strip():
+            raise ValueError("цель проекта не задана")
+
 
 @dataclass(frozen=True, slots=True)
 class Fragment:
@@ -71,12 +89,93 @@ class Fragment:
         return self.text.split("\n", 1)[1] if "\n" in self.text else self.text
 
 
+GENERAL = "general"  # утверждение без привязки к грани (цель, суть, пробелы)
+
+# Раздел ответа -> грань: для строк без ссылок на фрагменты.
+_SECTION_FACETS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"Опора|Выбор", re.I), "understanding"),
+    (re.compile(r"Этап", re.I), "stages"),
+    (re.compile(r"Особенност", re.I), "methodology"),
+    (re.compile(r"Риск", re.I), "risks"),
+    (re.compile(r"Результат|контрольн", re.I), "outcome"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Issue:
+    """Проблема, найденная проверкой, с гранью, к которой она относится."""
+
+    kind: str  # number | no_source | transfer | bad_ref
+    message: str
+    facet: str
+
+    def __str__(self) -> str:
+        return self.message
+
+
+@dataclass(frozen=True, slots=True)
+class FacetScore:
+    """Достоверность грани: опора поиска × чистота текста (эвристика, не вероятность).
+
+    retrieval — средняя оценка реранкера фрагментов грани в контексте (0–1);
+    grounding — доля утверждений грани, прошедших проверки (0–1).
+    """
+
+    facet: str
+    retrieval: float | None
+    claims: int
+    issues: int
+
+    @property
+    def grounding(self) -> float | None:
+        if self.claims == 0:
+            return None
+        return max(0.0, 1.0 - self.issues / self.claims)
+
+    @property
+    def confidence(self) -> int | None:
+        if self.retrieval is None or self.grounding is None:
+            return None
+        return round(100 * self.retrieval * self.grounding)
+
+
 @dataclass(slots=True)
 class Section:
     text: str
     fragments: list[Fragment]
     cited: list[int]
-    unverified: list[str] = field(default_factory=list)
+    issues: list[Issue] = field(default_factory=list)
+    claims_by_facet: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def unverified(self) -> list[str]:
+        return [issue.message for issue in self.issues]
+
+    def scores(self) -> dict[str, FacetScore]:
+        """Достоверность по граням в порядке FACETS (+ общая часть без грани)."""
+        retrieval: dict[str, list[float]] = {}
+        for fragment in self.fragments:
+            retrieval.setdefault(fragment.facet, []).append(fragment.hit.rerank_score)
+        issues: dict[str, int] = {}
+        for issue in self.issues:
+            issues[issue.facet] = issues.get(issue.facet, 0) + 1
+        result = {}
+        for facet in [*FACETS, GENERAL]:
+            values = retrieval.get(facet)
+            result[facet] = FacetScore(
+                facet,
+                sum(values) / len(values) if values else None,
+                max(self.claims_by_facet.get(facet, 0), issues.get(facet, 0)),
+                issues.get(facet, 0),
+            )
+        return result
+
+
+def retrieval_confidence(hits: Sequence[SearchHit]) -> int | None:
+    """Предварительная достоверность грани сразу после поиска — только опора поиска."""
+    if not hits:
+        return None
+    return round(100 * sum(h.rerank_score for h in hits) / len(hits))
 
 
 def facet_queries(request: ApproachRequest) -> dict[str, str]:
@@ -139,12 +238,15 @@ def build_prompt(
 def postprocess(
     answer: str, fragments: Sequence[Fragment], request: ApproachRequest | None = None
 ) -> Section:
-    """Проверить ответ модели против фрагментов (без LLM).
+    """Проверить ответ модели против фрагментов (без LLM) и разнести итог по граням.
 
     Перенос: в разделе «Опора» (прошлые проекты) слова ситуации нового
     заказчика, которых нет в процитированном фрагменте, — модель приписала
     прошлому проекту обстоятельства нового. Строка, почти целиком
     пересказывающая входные данные, утверждением без источника не считается.
+
+    Грань утверждения — та, по которой найдено большинство процитированных
+    фрагментов; без ссылок — по разделу ответа (`_SECTION_FACETS`).
     """
     situation_stems = _stems(request.situation or "") - _GENERIC_STEMS if request else set()
     input_stems = (
@@ -153,37 +255,65 @@ def postprocess(
     )
     known = {f.number for f in fragments}
     bodies = {f.number: f.body for f in fragments}
-    unverified: list[str] = []
+    facet_of = {f.number: f.facet for f in fragments}
+    issues: list[Issue] = []
+    claims_by_facet: dict[str, int] = {}
 
-    def drop_unknown(match: re.Match[str]) -> str:
-        number = int(match.group(1))
-        if number in known:
-            return match.group(0)
-        unverified.append(f"ссылка [{number}] на несуществующий фрагмент удалена")
-        return ""
+    def facet_for(markers: Sequence[int], fallback: str) -> str:
+        if not markers:
+            return fallback
+        counts: dict[str, int] = {}
+        for n in markers:
+            counts[facet_of[n]] = counts.get(facet_of[n], 0) + 1
+        order = list(FACETS)
+        return min(counts, key=lambda f: (-counts[f], order.index(f)))
 
-    text = _MARKER.sub(drop_unknown, answer.strip())
+    # Модель иногда дословно повторяет служебную строку промпта про источники.
+    lines = [line for line in answer.strip().split("\n")
+             if "список источников" not in line.lower()]
+    cleaned: list[str] = []
+    for line, section_facet in _with_sections(lines):
+        def drop_unknown(match: re.Match[str], section_facet: str = section_facet) -> str:
+            number = int(match.group(1))
+            if number in known:
+                return match.group(0)
+            issues.append(Issue("bad_ref", f"ссылка [{number}] на несуществующий фрагмент "
+                                           "удалена", section_facet))
+            return ""
+
+        cleaned.append(_MARKER.sub(drop_unknown, line))
+    text = "\n".join(cleaned)
+
     for issue in check_numbers(text, bodies):
         if issue.cited:  # числа в [вывод] и без маркера ловит проверка ниже
-            unverified.append(f"{issue.reason}: «{_short(issue.sentence)}»")
-    for line, in_basis in _claims(text):
+            markers = [n for n in issue.cited if n in known]
+            issues.append(Issue("number", f"{issue.reason}: «{_short(issue.sentence)}»",
+                                facet_for(markers, GENERAL)))
+    for line, in_basis, section_facet in _claims(text):
         markers = sorted({int(n) for n in _MARKER.findall(line)} & known)
+        facet = facet_for(markers, section_facet)
         if not markers and not _INFERENCE.search(line):
             stems = _stems(line)
             if stems and len(stems & input_stems) / len(stems) >= _RESTATEMENT_SHARE:
                 continue  # пересказ входных данных, а не утверждение о прошлом
-            unverified.append(f"без источника и без [вывод]: «{_short(line)}»")
+            claims_by_facet[facet] = claims_by_facet.get(facet, 0) + 1
+            issues.append(Issue("no_source", f"без источника и без [вывод]: «{_short(line)}»",
+                                facet))
             continue
+        claims_by_facet[facet] = claims_by_facet.get(facet, 0) + 1
         if in_basis and markers and situation_stems:
             cited_stems = _stems(" ".join(bodies[n] for n in markers))
             moved = sorted((_stems(line) & situation_stems) - cited_stems)
             if moved:
-                unverified.append(
+                issues.append(Issue(
+                    "transfer",
                     f"возможен перенос ситуации нового заказчика в факт прошлого проекта "
-                    f"(«{', '.join(moved)}…» нет во фрагментах {markers}): «{_short(line)}»"
-                )
+                    f"(«{', '.join(moved)}…» нет во фрагментах {markers}): «{_short(line)}»",
+                    facet,
+                ))
     cited = sorted({int(n) for n in _MARKER.findall(text)} & known)
-    return Section(text=text, fragments=list(fragments), cited=cited, unverified=unverified)
+    return Section(text=text, fragments=list(fragments), cited=cited, issues=issues,
+                   claims_by_facet=claims_by_facet)
 
 
 def render(section: Section) -> str:
@@ -198,10 +328,28 @@ def render(section: Section) -> str:
         lines.append(f"- {title} — проект «{project}», заказчик: {customer}: {'; '.join(refs)}")
     if not section.cited:
         lines.append("— (ни одной ссылки на фрагменты)")
-    if section.unverified:
+    lines += ["", "### Достоверность по граням",
+              "| Грань | Достоверность | Опора поиска | Утверждений | Проблем |",
+              "|---|---|---|---|---|"]
+    for facet, score in section.scores().items():
+        if facet == GENERAL and score.claims == 0:
+            continue
+        confidence = f"{score.confidence}%" if score.confidence is not None else "—"
+        retrieval = f"{score.retrieval:.2f}" if score.retrieval is not None else "—"
+        lines.append(f"| {facet_label(facet)} | {confidence} | {retrieval} | "
+                     f"{score.claims} | {score.issues} |")
+    if section.issues:
         lines += ["", "### Не подтверждено (проверить вручную)"]
-        lines += [f"- {item}" for item in section.unverified]
+        for facet in [*FACETS, GENERAL]:
+            group = [i for i in section.issues if i.facet == facet]
+            if group:
+                lines += ["", f"#### {facet_label(facet)} ({len(group)})"]
+                lines += [f"- {issue.message}" for issue in group]
     return "\n".join(lines)
+
+
+def facet_label(facet: str) -> str:
+    return FACET_LABELS[facet][0] if facet in FACET_LABELS else "Общее (цель, суть, выводы)"
 
 
 # --------------------------------------------------------------- детали
@@ -214,14 +362,26 @@ def _fragment_text(number: int, hit: SearchHit) -> str:
     return f"{label}\n{linearize_wide_tables(c.text_raw)}"
 
 
-def _claims(text: str) -> list[tuple[str, bool]]:
-    """Строки-утверждения и признак «раздел Опора».
+def _with_sections(lines: Sequence[str]) -> list[tuple[str, str]]:
+    """Каждой строке — грань её раздела (до первого раздела — общая часть)."""
+    result = []
+    facet = GENERAL
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            facet = next((f for rx, f in _SECTION_FACETS if rx.search(stripped)), GENERAL)
+        result.append((line, facet))
+    return result
+
+
+def _claims(text: str) -> list[tuple[str, bool, str]]:
+    """Строки-утверждения: (строка, раздел «Опора»?, грань раздела).
 
     Без заголовков, шапок таблиц, коротких меток и вопросов-пробелов.
     """
     claims = []
     in_gaps = in_basis = False
-    for raw in text.split("\n"):
+    for raw, section_facet in _with_sections(text.split("\n")):
         line = raw.strip()
         if line.startswith("#"):
             in_gaps = bool(_GAPS_HEADING.match(line))
@@ -236,7 +396,7 @@ def _claims(text: str) -> list[tuple[str, bool]]:
             continue  # шапка таблицы
         if len(re.sub(r"[*_|\-#\[\]\d]", " ", line).split()) < 5:
             continue
-        claims.append((line, in_basis))
+        claims.append((line, in_basis, section_facet))
     return claims
 
 

@@ -54,7 +54,14 @@ def search(
     top_k: int | None = None,
     query_industry: str | None = None,
     scope: repo.SearchScope | None = None,
+    candidates: int | None = None,
 ) -> SearchResult:
+    """Найти фрагменты по одному запросу.
+
+    `candidates` — сколько кандидатов после RRF отдать реранкеру (по умолчанию
+    search.candidates). Реранкер — самая дорогая стадия: при подборе контекста
+    по многим граням меньший срез заметно ускоряет поиск.
+    """
     cfg = settings.search
     version = cfg.active_index_version or repo.active_index_version(conn)
     if version is None:
@@ -71,7 +78,7 @@ def search(
     )
     fused = weighted_rrf(
         standard_lists(vector_query=vector_ids, fts_query=fts_ids),
-        rrf_k=cfg.rrf_k, top_n=cfg.candidates,
+        rrf_k=cfg.rrf_k, top_n=candidates or cfg.candidates,
     )
     chunks = repo.fetch_chunks(conn, [c.candidate_id for c in fused])
     candidates = [c for c in fused if c.candidate_id in chunks]

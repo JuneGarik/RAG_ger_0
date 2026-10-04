@@ -116,3 +116,42 @@ def test_brief_mode_adds_instruction() -> None:
     request = ApproachRequest("Цель")
     assert "КРАТКИЙ РЕЖИМ" in build_prompt(request, fragments(), brief=True)
     assert "КРАТКИЙ РЕЖИМ" not in build_prompt(request, fragments())
+
+
+def test_empty_goal_rejected() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="цель"):
+        ApproachRequest("   ")
+
+
+def test_issues_and_confidence_grouped_by_facet() -> None:
+    from bzpo.generation.approach import GENERAL, retrieval_confidence
+
+    frs = fragments()  # [1] methodology (слайд 36), [2] risks (слайд 19), оценки 1.0
+    answer = "\n".join([
+        "**Суть подхода:** Начать с диагностики и интервью руководства заказчика сразу.",
+        "### 1. Опора: подходы прошлых проектов",
+        "В проекте для девелопера проведено 47 интервью [1].",
+        "В проекте проведено 52 интервью с менеджерами [1].",
+        "### 5. Риски и меры",
+        "Барьер проекта — отсутствие стратегии ЦТ у компании [2].",
+        "Риск сопротивления персонала встречается почти во всех проектах.",
+    ])
+    section = postprocess(answer, frs, ApproachRequest("Стратегия"))
+    by_facet = {i.facet: i.kind for i in section.issues}
+    assert by_facet["methodology"] == "number"  # 52 нет во фрагменте [1]
+    assert by_facet["risks"] == "no_source"  # строка без ссылки в разделе «Риски»
+    assert by_facet[GENERAL] == "no_source"  # «Суть» до первого раздела
+
+    scores = section.scores()
+    assert scores["methodology"].claims == 2 and scores["methodology"].issues == 1
+    assert scores["methodology"].confidence == 50
+    assert scores["risks"].confidence == 50
+    assert scores["stages"].confidence is None  # грань не использована
+    assert retrieval_confidence([frs[0].hit]) == 100
+
+    output = render(section)
+    assert "### Достоверность по граням" in output
+    assert "| Методология | 50% |" in output
+    assert "#### Риски (1)" in output and "#### Методология (1)" in output

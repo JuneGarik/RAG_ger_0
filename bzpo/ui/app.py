@@ -13,17 +13,25 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import streamlit as st
 
 from bzpo.config import load_config
-from bzpo.generation.approach import ApproachRequest
-from bzpo.generation.run import generate_approach, save_draft
+from bzpo.generation.approach import (
+    FACET_LABELS,
+    ApproachRequest,
+    FacetScore,
+    facet_queries,
+    retrieval_confidence,
+)
+from bzpo.generation.run import MODES as MODES_PARAMS
+from bzpo.generation.run import generate_approach, save_draft, search_facets
 from bzpo.providers.local import LocalEmbedder, LocalReranker
 from bzpo.providers.ollama import OllamaClient
 from bzpo.registry.workbook import file_key, registered_files
-from bzpo.search.query import search
+from bzpo.search.query import SearchResult, search
 from bzpo.storage import repo
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -128,44 +136,176 @@ def sidebar() -> tuple[str, repo.SearchScope]:
 # ------------------------------------------------------------ вкладки
 
 
+def _relevance(score: float) -> str:
+    if score >= 0.8:
+        return "🟢 высокая"
+    if score >= 0.5:
+        return "🟡 средняя"
+    return "⚪ низкая"
+
+
+def _confidence_badge(value: int | None) -> str:
+    if value is None:
+        return "—"
+    icon = "🟢" if value >= 75 else "🟡" if value >= 50 else "🔴"
+    return f"{icon} {value}%"
+
+
+def render_facet(
+    facet: str, result: SearchResult, query: str, score: FacetScore | None = None
+) -> None:
+    """Раскрывающийся блок грани: что ищем, что нашли и насколько этому верить.
+
+    До генерации показывается предварительная достоверность (только опора
+    поиска), после — итоговая: опора поиска × доля утверждений без проблем.
+    """
+    name, what = FACET_LABELS[facet]
+    found = "не найдено" if result.not_found else f"{len(result.hits)} слайд(ов)"
+    if score is None:
+        badge = f"предв. достоверность {_confidence_badge(retrieval_confidence(result.hits))}"
+    elif score.confidence is None:
+        badge = "в тексте не использована"
+    else:
+        badge = f"достоверность {_confidence_badge(score.confidence)}"
+    with st.expander(f"{name} — {found} · {badge}"):
+        st.markdown(f"**Что ищем:** {what}.")
+        st.caption(f"Запрос к базе: «{query}»")
+        if score is not None and score.claims:
+            st.caption(f"Опора поиска {score.retrieval or 0:.2f} · утверждений в тексте "
+                       f"{score.claims}, с проблемами {score.issues}")
+        if not result.hits:
+            st.write("В базе нет подходящих фрагментов: грань будет отмечена как пробел.")
+        for hit in result.hits:
+            c = hit.chunk
+            title = c.text_raw.split("\n", 1)[0]
+            st.markdown(f"- **Слайд {c.page}** — {title}  \n"
+                        f"  {_relevance(hit.rerank_score)} ({hit.rerank_score:.2f}) · "
+                        f"{c.doc_title} · раздел «{c.section_title}»")
+
+
+def _start_generation() -> None:
+    """Колбэк кнопки: запрос фиксируется здесь, до перерисовки страницы."""
+    ss = st.session_state
+    goal = ss.get("goal", "").strip()
+    if not goal:
+        ss["goal_missing"] = True
+        return
+    ss["goal_missing"] = False
+    ss["pending_request"] = ApproachRequest(
+        goal, ss.get("area", "").strip() or None, ss.get("situation", "").strip() or None
+    )
+    ss["busy"] = True
+    ss["approach_run"] = None
+
+
+def _run_generation(mode: str, scope: repo.SearchScope) -> None:
+    ss = st.session_state
+    request = ss["pending_request"]
+    queries = facet_queries(request)
+    embedder, reranker = models()
+    params = MODES_PARAMS[mode]
+    limit = params.num_predict or settings().generation.gen_max_tokens
+
+    st.subheader("Ход работы")
+    stage = st.progress(0.0, text="Этап 1 из 3 · поиск по шести граням подхода")
+    facet_box = st.container()
+    with connection() as conn:
+        done: list[str] = []
+
+        def on_facet(facet: str, result: SearchResult) -> None:
+            done.append(facet)
+            with facet_box:
+                render_facet(facet, result, queries[facet])
+            stage.progress(0.3 * len(done) / len(queries),
+                           text=f"Этап 1 из 3 · поиск: {len(done)} из {len(queries)} граней")
+
+        search_started = time.perf_counter()
+        facets = search_facets(conn, settings(), embedder, reranker, request, mode=mode,
+                               scope=scope, progress=on_facet)
+        search_seconds = time.perf_counter() - search_started
+
+        stage.progress(0.35, text="Этап 2 из 3 · модель пишет черновик")
+        live_caption = st.empty()
+        live_text = st.empty()
+        state = {"text": "", "tokens": 0, "started": time.perf_counter(), "shown": 0.0}
+
+        def on_token(piece: str) -> None:
+            state["text"] += piece
+            state["tokens"] += 1
+            now = time.perf_counter()
+            if now - state["shown"] < 0.25:  # не перерисовывать страницу на каждый токен
+                return
+            state["shown"] = now
+            elapsed = now - state["started"]
+            speed = state["tokens"] / elapsed if elapsed else 0.0
+            share = min(state["tokens"] / limit, 1.0)
+            stage.progress(0.35 + 0.6 * share,
+                           text=f"Этап 2 из 3 · пишет: {state['tokens']} токенов, "
+                                f"{speed:.0f} ток/с, {elapsed:.0f} с")
+            live_caption.caption("Текст появляется по мере генерации; ссылки и проверка — "
+                                 "после завершения.")
+            live_text.markdown(state["text"] + " ▌")
+
+        run = generate_approach(conn, settings(), embedder, reranker, request, mode=mode,
+                                scope=scope, facets=facets, on_token=on_token)
+    stage.progress(1.0, text="Этап 3 из 3 · проверка завершена")
+    run.search_seconds = search_seconds
+    ss["approach_run"] = run
+    ss["approach_queries"] = queries
+    if run.section is not None:
+        ss["approach_path"] = save_draft(run, DRAFTS)
+
+
 def tab_approach(mode: str, scope: repo.SearchScope) -> None:
     st.header("Подход к новому проекту")
     st.caption("Поиск по 6 граням подхода в прошлых проектах → черновик с источниками. "
                "Всё, что модель не подтвердила фрагментами, попадает в блок «Не подтверждено».")
-    with st.form("approach"):
-        goal = st.text_input("Цель нового проекта *",
-                             placeholder="Разработка стратегии цифровой трансформации")
-        area = st.text_input("Область / отрасль", placeholder="коммерческая недвижимость")
-        situation = st.text_area(
-            "Ситуация заказчика", height=100,
-            placeholder="нет ИТ-стратегии, учёт в Excel и 1С, "
-                        "руководство сомневается в окупаемости",
-        )
-        submitted = st.form_submit_button("Сгенерировать", type="primary")
-    if submitted:
-        if not goal.strip():
-            st.warning("Укажите цель проекта.")
-            return
-        request = ApproachRequest(goal.strip(), area.strip() or None, situation.strip() or None)
-        embedder, reranker = models()
-        with st.status("Генерация…", expanded=True) as status, connection() as conn:
-            run = generate_approach(
-                conn, settings(), embedder, reranker, request, mode=mode, scope=scope,
-                progress=lambda message: status.write(message),
-            )
-            status.update(label=f"Готово: поиск {run.search_seconds:.0f} с, "
-                                f"генерация {run.generation_seconds:.0f} с", state="complete")
-        st.session_state["approach_run"] = run
-        if run.section is not None:
-            st.session_state["approach_path"] = save_draft(run, DRAFTS)
+    busy = st.session_state.get("busy", False)
+    with st.form("approach_form"):
+        # Поля не блокируются: смена disabled пересоздаёт виджет и стирает ввод.
+        st.text_input("Цель нового проекта *", key="goal",
+                      placeholder="Разработка стратегии цифровой трансформации")
+        st.text_input("Область / отрасль", key="area",
+                      placeholder="коммерческая недвижимость")
+        st.text_area("Ситуация заказчика", key="situation", height=100,
+                     placeholder="нет ИТ-стратегии, учёт в Excel и 1С, "
+                                 "руководство сомневается в окупаемости")
+        st.form_submit_button("⏳ Генерация идёт…" if busy else "Сгенерировать",
+                              type="primary", disabled=busy, on_click=_start_generation)
+    if st.session_state.get("goal_missing"):
+        st.warning("Укажите цель проекта.")
+
+    if busy:
+        try:
+            _run_generation(mode, scope)
+        finally:
+            st.session_state["busy"] = False
+        st.rerun()
 
     run = st.session_state.get("approach_run")
     if run is None:
         return
+    st.success(f"Готово: поиск {run.search_seconds:.0f} с, генерация "
+               f"{run.generation_seconds:.0f} с, {run.completion_tokens or 0} токенов")
+    queries = st.session_state.get("approach_queries", {})
+    scores = run.section.scores() if run.section is not None else {}
+    st.subheader("Достоверность по граням")
+    st.caption("Эвристика, а не вероятность: средняя оценка реранкера фрагментов грани × "
+               "доля утверждений грани, прошедших проверки (числа, ссылки, источник, перенос).")
+    columns = st.columns(len(FACET_LABELS))
+    for column, facet in zip(columns, FACET_LABELS, strict=True):
+        score = scores.get(facet)
+        column.metric(FACET_LABELS[facet][0],
+                      _confidence_badge(score.confidence if score else None),
+                      help=f"проблем: {score.issues}" if score else None)
+    st.subheader("Что нашлось по граням подхода")
+    for facet, result in run.facets.items():
+        render_facet(facet, result, queries.get(facet, ""), scores.get(facet))
     if run.truncated:
-        st.warning("Ответ обрезан по лимиту длины — попробуйте режим «Тщательно».")
+        st.warning("Ответ обрезан по лимиту длины — последний раздел может быть неполным.")
     if run.section is not None and run.section.unverified:
         st.info(f"Не подтверждено: {len(run.section.unverified)} — см. блок в конце черновика.")
+    st.subheader("Черновик")
     st.markdown(run.markdown)
     path = st.session_state.get("approach_path")
     if path:

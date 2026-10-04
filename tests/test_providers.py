@@ -804,3 +804,37 @@ def test_ollama_requires_num_predict() -> None:
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with pytest.raises(ValueError, match="num_predict"):
         OllamaClient(OllamaConfig(), role="query", client=client).generate("промпт")
+
+
+def test_ollama_stream_yields_pieces_then_generation() -> None:
+    captured: dict[str, Any] = {}
+    lines = [
+        {"response": "Под", "done": False},
+        {"response": "ход", "done": False},
+        {"response": "", "done": True, "done_reason": "length", "eval_count": 2,
+         "prompt_eval_count": 10, "model": "qwen"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        body = "\n".join(json.dumps(line, ensure_ascii=False) for line in lines)
+        return httpx.Response(200, content=body.encode())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    events = list(OllamaClient(ollama_config(), role="query", client=client).stream(
+        "промпт", system="правила"
+    ))
+    assert events[:2] == ["Под", "ход"]
+    final = events[-1]
+    assert final.text == "Подход" and final.truncated_by_length
+    assert captured["payload"]["stream"] is True
+    assert captured["payload"]["system"] == "правила"
+
+
+def test_ollama_stream_error_in_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b'{"error": "model not found"}')
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(OllamaError, match="model not found"):
+        list(OllamaClient(ollama_config(), role="query", client=client).stream("промпт"))

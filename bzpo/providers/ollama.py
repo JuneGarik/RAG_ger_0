@@ -26,7 +26,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -113,6 +115,73 @@ class OllamaClient:
         фрагментов [N] живёт только в `prompt`, чтобы проверяемая строка
         контекста оставалась одной.
         """
+        payload = self._payload(prompt, temperature=temperature, seed=seed,
+                                num_predict=num_predict, json_format=json_format,
+                                stop=stop, system=system)
+        data = self._post(GENERATE_PATH, payload)
+        return self._parse(data)
+
+    def stream(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.0,
+        num_predict: int | None = None,
+        system: str | None = None,
+    ) -> Iterator[str | Generation]:
+        """Потоковая генерация: куски текста по мере готовности, последним — Generation.
+
+        Для интерфейса: длинный раздел пишется 1–2 минуты, и пользователь видит
+        текст сразу, а не после окончания. Итоговый Generation несёт те же
+        счётчики, что и `generate` (done_reason, токены), — по нему видна обрезка.
+        """
+        payload = self._payload(prompt, temperature=temperature, seed=None,
+                                num_predict=num_predict, json_format=False, stop=None,
+                                system=system)
+        payload["stream"] = True
+        url = self._config.base_url.rstrip("/") + GENERATE_PATH
+        parts: list[str] = []
+        try:
+            with self._client.stream("POST", url, json=payload, timeout=self._timeout) as response:
+                if response.status_code != httpx.codes.OK:
+                    response.read()
+                    raise OllamaError(
+                        f"Ollama вернула HTTP {response.status_code} на {url}: "
+                        f"{response.text[:300]}"
+                    )
+                for line in response.iter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except ValueError as exc:
+                        raise OllamaError(f"Ollama вернула невалидный JSON: {line[:300]}") from exc
+                    if "error" in data:
+                        raise OllamaError(f"ошибка Ollama: {data['error']}")
+                    piece = data.get("response", "")
+                    if piece:
+                        parts.append(piece)
+                        yield piece
+                    if data.get("done"):
+                        yield self._parse({**data, "response": "".join(parts)})
+                        return
+        except httpx.HTTPError as exc:
+            raise OllamaUnavailable(
+                f"модель генерации недоступна: {url}, {type(exc).__name__}: {exc}"
+            ) from exc
+        raise OllamaError("поток Ollama оборвался без завершающего сообщения")
+
+    def _payload(
+        self,
+        prompt: str,
+        *,
+        temperature: float,
+        seed: int | None,
+        num_predict: int | None,
+        json_format: bool,
+        stop: list[str] | None,
+        system: str | None,
+    ) -> dict[str, Any]:
         resolved_predict = num_predict if num_predict is not None else self._config.num_predict
         if resolved_predict is None:
             # Settings подставляет num_predict из gen_max_tokens; None здесь означает,
@@ -147,8 +216,7 @@ class OllamaClient:
             # Заменяет системный промпт из Modelfile модели, а не дополняет его.
             payload["system"] = system
 
-        data = self._post(GENERATE_PATH, payload)
-        return self._parse(data)
+        return payload
 
     def installed_models(self) -> list[str] | None:
         """Модели, скачанные в Ollama; None — Ollama не отвечает."""
