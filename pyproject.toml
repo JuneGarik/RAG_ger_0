@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bzpo"
+version = "0.1.0"
+description = "БЗПО — база знаний проектного опыта, RAG on-premise"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# psycopg вынесен в extra: алгоритмические модули (search/, providers/) и их тесты
+# работают без PostgreSQL, а CI не поднимает базу. Импорт psycopg — ленивый,
+# внутри функций storage/ (см. bzpo/storage/migrate.py).
+db = ["psycopg[binary]>=3.2"]
+# Профиль ноутбука (external.provider = local): эмбеддер и реранкер в процессе,
+# на Apple Silicon — через MPS. transformers>=4.57 нужен коду Giga-Embeddings.
+local = [
+    "torch>=2.6",
+    "transformers>=4.57",
+    "sentence-transformers>=4.1",
+]
+# Реестр проектов в Excel: загрузчик и черновики строк от LLM.
+registry = ["openpyxl>=3.1"]
+# Веб-интерфейс: ./start.sh
+ui = ["streamlit>=1.40"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+include = ["bzpo*"]
+
+[tool.setuptools.package-data]
+bzpo = ["migrations/*.sql", "generation/prompts/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+# docs/about/ — артефакты этапа 0 (одноразовый зонд probe_api), не сопровождаемый код.
+extend-exclude = ["docs/about"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+# В тестах допустимы длинные литералы с ожидаемыми числами.
+"tests/*" = ["E501"]

@@ -1,0 +1,146 @@
+# Конфигурация БЗПО (SPEC раздел 10). Файл версионируется в git.
+#
+# Секреты сюда класть нельзя: загрузчик (bzpo/config.py) падает с ошибкой на
+# ключах token / dsn / password / api_key / secret. Они задаются окружением:
+#   BZPO_EXTERNAL__TOKEN=...        токен внешнего сервиса эмбеддингов/реранкинга
+#   BZPO_DB__DSN=postgresql://...   строка подключения к PostgreSQL
+#
+# Любой параметр переопределяется окружением с префиксом BZPO_ и разделителем __:
+#   BZPO_SEARCH__TOP_K_FINAL=5, BZPO_FLAGS__USE_HYDE=false
+# Окружение имеет приоритет над этим файлом.
+
+app_env: dev
+log_level: INFO
+
+chunking:
+  chunk_target: 500
+  chunk_max: 1000
+  chunk_min: 100
+  chunk_overlap: 0.15
+  # Предел входа эмбеддера в токенах. Профиль ноутбука: 4096 = local.embed_max_tokens
+  # (длинный вход на MPS дорог по памяти). Для внешнего сервиса — по отчёту probe_api.
+  chunk_hard_limit_embed: 4096
+  section_max_tokens: 4000
+  dedup_threshold: 0.95
+  dedup_threshold_fallback: 0.97
+
+search:
+  per_list_k: 100
+  rrf_k: 60
+  rrf_weight_hyde: 0.7
+  candidates: 50
+  top_k_final: 8
+  mmr_lambda: 0.7
+  # null до калибровки на >=15 запросах без ответа (этап 3.6). До калибровки
+  # отсечение «не найдено» не применяется.
+  rerank_threshold: null
+  rerank_input: text_raw
+  boost_w_industry: 0.05
+  boost_w_won: 0.05
+  boost_w_fresh: 0.03
+  boost_fresh_horizon_years: 5.0
+  section_exemplars: 2
+  # PoC: только открытые проекты. Проекты anon исключаются конфигурацией,
+  # разметка publicity в данных не мутируется (SPEC раздел 12).
+  allowed_publicity: ["open"]
+  # null -> активная версия берётся из index_versions.status = 'active'.
+  active_index_version: null
+
+generation:
+  # SPEC называет 12000, но 12000 x 1.2 + 3000 = 17400 не помещается в окно
+  # 16384 и валидация такой конфигурации падает. 11000 — максимум, который
+  # проходит проверку при num_ctx 16384 и gen_max_tokens 3000. См. README.
+  context_budget_tokens: 11000
+  gen_max_tokens: 3000
+  context_tokenizer_margin: 1.2
+  classifier_conf_threshold: 0.7
+
+graph:
+  graph_edge_threshold: 0.80
+  graph_depth: 1
+
+flags:
+  use_hyde: true
+  use_decomposition: true
+  use_graph_expansion: false
+
+external:
+  # local — модели в процессе приложения (секция local ниже, профиль ноутбука);
+  # external — HTTP-сервис эмбеддингов/реранкинга с параметрами этой секции.
+  provider: local
+  base_url: http://127.0.0.1:8080
+  embed_path: /v1/embeddings
+  # tei: POST /rerank {"query","texts"} -> [{"index","score"}]
+  # cohere: POST /v1/rerank {"model","query","documents"} -> {"results":[{"index","relevance_score"}]}
+  # Значение выбирается по отчёту probe_api, автоопределения нет.
+  rerank_dialect: tei
+  rerank_path: null
+  health_path: /v1/models
+  embed_model: BAAI/bge-m3
+  # Ревизия входит в ключ кэша векторов запросов; заполняется по ответу владельца сервиса.
+  embed_model_revision: unknown
+  embed_dim: 1024
+  # Батчирование выполняет модуль изоляции: значение — предел сервиса.
+  embed_batch: 128
+  rerank_model: BAAI/bge-reranker-v2-m3
+  # Сколько пар реранкер принимает за вызов — блокирующий вопрос SPEC 6.2.
+  rerank_batch: 50
+  max_input_chars: 20000
+  # 3 повтора после первой попытки, задержки 1/3/9 с (SPEC 6.3).
+  retry_attempts: 3
+  retry_delays: [1.0, 3.0, 9.0]
+  retry_after_max: 60.0
+  timeout_connect: 5.0
+  timeout_read: 60.0
+  max_concurrency: 4
+  rate_limit_rps: 20.0
+  health_interval: 30.0
+  query_cache_size: 4096
+
+# Профиль ноутбука: Apple Silicon M5, 16 ГБ общей памяти. Бюджет памяти:
+#   одна LLM в памяти: Qwen3.5 9B ~6.6 ГБ или GigaChat 3.1 Lightning ~6.5 ГБ, + KV-кэш ~1 ГБ
+#   эмбеддер 480M bf16 ~1 ГБ, реранкер bge-reranker-v2-m3 bf16 ~1.2 ГБ
+#   PostgreSQL ~0.5 ГБ; остальное — macOS и приложения.
+local:
+  embed_model: ai-sage/Giga-Embeddings-instruct-480M-0826
+  # Commit с HF (2026-09-14): ревизия входит в ключ кэша и фиксирует код trust_remote_code.
+  embed_model_revision: 1763d603adac8057bd6482a708001b0ed2e0a903
+  embed_dim: 1024
+  query_instruction: "Instruct: Given a query, retrieve relevant passages\nQuery: "
+  embed_max_tokens: 4096
+  embed_batch: 16
+  rerank_model: BAAI/bge-reranker-v2-m3
+  # Не меньше text_raw крупнейшего слайда (сейчас 1369 ток.): слайд не режется,
+  # и реранкер обязан дочитать его целиком. Запас — на свой токенизатор bge-m3.
+  rerank_max_tokens: 2048
+  rerank_batch: 16
+  device: auto
+  # При NaN-векторах на MPS переключить на float32 (память x2).
+  dtype: bfloat16
+  trust_remote_code: true
+  query_cache_size: 4096
+
+ollama:
+  base_url: http://127.0.0.1:11434
+  # Модели по ролям; одновременно в памяти одна (OLLAMA_MAX_LOADED_MODELS=1).
+  # query — классификация, HyDE, генерация раздела: точность важнее скорости.
+  # Qwen3.5 9B держит маркеры [N] и не выдумывает факты (~23 ток/с).
+  model_query: qwen3.5:9b
+  # enrichment — шапки чанков при индексации: тысячи вызовов, решает скорость.
+  # GigaChat 3.1 Lightning (MoE 10B / 1.8B активных, ~75 ток/с).
+  model_enrichment: hf.co/ai-sage/GigaChat3.1-10B-A1.8B-GGUF:Q4_K_M
+  # Qwen3.5 по умолчанию «думает»; рассуждения съедают num_predict.
+  think: false
+  # Обязательно: дефолт 2048 молча усекает контекст с разделами-образцами.
+  num_ctx: 16384
+  # null -> подставляется generation.gen_max_tokens.
+  num_predict: null
+  # -1: модель резидентна в памяти.
+  keep_alive: -1
+  timeout_connect: 5.0
+  timeout_read: 180.0
+
+db:
+  statement_timeout_ms: 30000
+  # null -> каталог bzpo/migrations внутри пакета.
+  migrations_dir: null

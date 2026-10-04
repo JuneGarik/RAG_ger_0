@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>БЗПО — интеллектуальная база знаний проектного опыта</title>
+<style>
+:root{
+  --ink:#0f1720; --ink2:#3b4754; --ink3:#6b7885; --line:#e2e6ea;
+  --bg:#ffffff; --bg2:#f6f8fa; --bg3:#eef2f6;
+  --acc:#1f4e79; --acc2:#2e74b5; --acc-l:#e8f0f8;
+  --warn:#c0562a; --warn-l:#fcefe8;
+  --ok:#2e7d4f; --ok-l:#e9f5ee;
+  --mvp:#7a8794; --mvp-l:#f1f3f5;
+  --evt:#a67c00; --evt-l:#fff8e8;
+  --mono:'SF Mono',ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.62 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:0 28px}
+h2{font-size:27px;line-height:1.25;letter-spacing:-.4px;margin:0 0 6px}
+h3{font-size:18px;margin:30px 0 12px;letter-spacing:-.2px}
+p{margin:0 0 14px;color:var(--ink2)}
+a{color:var(--acc2)}
+code{font-family:var(--mono);font-size:.88em;background:var(--bg3);padding:1px 5px;border-radius:4px;color:var(--acc)}
+
+/* ---------- nav ---------- */
+nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.93);
+  backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;gap:4px;align-items:center;height:52px;overflow-x:auto;scrollbar-width:none}
+nav .wrap::-webkit-scrollbar{display:none}
+nav b{font-size:14px;letter-spacing:.4px;color:var(--acc);margin-right:16px;white-space:nowrap}
+nav a{font-size:13.5px;color:var(--ink3);text-decoration:none;padding:6px 11px;border-radius:7px;white-space:nowrap}
+nav a:hover{background:var(--bg3);color:var(--ink)}
+
+/* ---------- hero ---------- */
+header{background:linear-gradient(180deg,#12283d 0%,#1f4e79 100%);color:#fff;padding:74px 0 0}
+header .tag{display:inline-block;font-size:12px;letter-spacing:1.6px;text-transform:uppercase;
+  color:#9fc3e3;border:1px solid rgba(159,195,227,.35);padding:5px 11px;border-radius:20px;margin-bottom:22px}
+header h1{font-size:46px;line-height:1.1;letter-spacing:-1.2px;margin:0 0 16px;font-weight:650}
+header .lead{font-size:19px;line-height:1.55;color:#cfe0ef;max-width:760px;margin:0 0 40px}
+header .lead b{color:#fff;font-weight:600}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;
+  background:rgba(255,255,255,.14);border-radius:12px 12px 0 0;overflow:hidden;margin-bottom:-1px}
+.kpi{background:#1b3f63;padding:20px 18px}
+.kpi .n{font-size:26px;font-weight:650;letter-spacing:-.5px;line-height:1.15}
+.kpi .l{font-size:12.5px;color:#a8c5de;margin-top:5px;line-height:1.35}
+
+/* ---------- sections ---------- */
+section{padding:60px 0;border-bottom:1px solid var(--line)}
+section.alt{background:var(--bg2)}
+.eyebrow{font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:var(--acc2);font-weight:650;margin-bottom:10px}
+.sub{font-size:16.5px;color:var(--ink3);max-width:780px;margin:0 0 30px}
+
+/* ---------- cards ---------- */
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.card{background:#fff;border:1px solid var(--line);border-radius:11px;padding:20px 22px}
+.card h4{margin:0 0 8px;font-size:15.5px;letter-spacing:-.1px}
+.card p{margin:0;font-size:14.5px;line-height:1.55}
+.card .num{font-family:var(--mono);font-size:12px;color:var(--acc2);font-weight:600;letter-spacing:.5px}
+
+/* ---------- pipeline ---------- */
+.tabs{display:inline-flex;background:var(--bg3);padding:4px;border-radius:10px;margin-bottom:26px;gap:3px}
+.tabs button{border:0;background:none;font:inherit;font-size:14.5px;padding:8px 18px;border-radius:7px;
+  cursor:pointer;color:var(--ink3);transition:.15s}
+.tabs button[aria-selected=true]{background:#fff;color:var(--ink);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.09)}
+.pipe{display:none}
+.pipe.on{display:block}
+.evt{display:flex;justify-content:center;margin:0 auto 6px;max-width:560px}
+.evt span{background:var(--evt-l);border:1px solid #e6d3a0;color:#6b5200;font-size:13.5px;font-weight:600;
+  padding:8px 26px;border-radius:22px;text-align:center}
+.arrow{width:1px;height:18px;background:#c8d0d8;margin:0 auto;position:relative}
+.arrow::after{content:'';position:absolute;bottom:0;left:-3.5px;border:4px solid transparent;border-top-color:#c8d0d8}
+.step{display:grid;grid-template-columns:74px 1fr 168px;gap:14px;align-items:center;
+  background:#fff;border:1px solid var(--line);border-left:3px solid var(--acc);border-radius:9px;padding:13px 16px}
+.step.mvp{border-left-color:var(--mvp);border-style:dashed;border-left-style:solid;background:var(--mvp-l)}
+.step.p1{border-left-color:#c3ccd4;border-style:dashed;border-left-style:solid;background:#fbfcfd}
+.badge{font-size:10.5px;font-weight:700;letter-spacing:.4px;text-align:center;padding:4px 0;border-radius:5px;
+  background:var(--acc);color:#fff}
+.step.mvp .badge{background:#fff;color:var(--mvp);border:1px solid var(--mvp)}
+.step.p1 .badge{background:#fff;color:#98a4b0;border:1px solid #ccd4dc;font-size:9.5px}
+.step .t{font-size:14.5px;font-weight:600;line-height:1.35}
+.step .d{font-size:13px;color:var(--ink3);margin-top:2px;line-height:1.4}
+.step .who{font-family:var(--mono);font-size:11px;color:var(--ink3);text-align:right;line-height:1.5}
+.step .who b{display:block;color:var(--ink2);font-weight:600}
+.xor{display:flex;align-items:center;justify-content:center;gap:10px;margin:4px 0}
+.xor i{width:28px;height:28px;border:1.5px solid var(--warn);border-radius:50%;color:var(--warn);
+  font-style:normal;font-weight:700;font-size:13px;display:grid;place-items:center}
+.xor span{font-size:13px;color:var(--warn)}
+.legend{display:flex;flex-wrap:wrap;gap:18px;font-size:13px;color:var(--ink3);margin-bottom:22px}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+
+/* ---------- table ---------- */
+table{width:100%;border-collapse:collapse;font-size:14.5px;margin:6px 0 4px}
+th{text-align:left;font-size:12px;letter-spacing:.7px;text-transform:uppercase;color:var(--ink3);
+  font-weight:650;padding:0 14px 9px;border-bottom:1.5px solid var(--line)}
+td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--ink2)}
+td:first-child{color:var(--ink);font-weight:550}
+tr:hover td{background:var(--bg2)}
+.pill{display:inline-block;font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;letter-spacing:.3px}
+.pill.poc{background:var(--acc-l);color:var(--acc)}
+.pill.mvp{background:var(--mvp-l);color:var(--mvp);border:1px solid #dfe4e9}
+.pill.ext{background:var(--warn-l);color:var(--warn)}
+.pill.own{background:var(--ok-l);color:var(--ok)}
+
+/* ---------- callout ---------- */
+.note{border-left:3px solid var(--acc2);background:var(--acc-l);padding:15px 19px;border-radius:0 8px 8px 0;
+  font-size:14.5px;line-height:1.6;margin:18px 0;color:var(--ink2)}
+.note.w{border-left-color:var(--warn);background:var(--warn-l)}
+.note.o{border-left-color:var(--ok);background:var(--ok-l)}
+.note b{color:var(--ink)}
+
+/* ---------- decisions ---------- */
+details{border:1px solid var(--line);border-radius:10px;margin-bottom:9px;background:#fff;overflow:hidden}
+details[open]{border-color:#c9d6e2}
+summary{cursor:pointer;padding:15px 20px;font-size:15px;font-weight:600;list-style:none;
+  display:flex;justify-content:space-between;align-items:center;gap:14px}
+summary::-webkit-details-marker{display:none}
+summary::after{content:'+';color:var(--acc2);font-size:19px;font-weight:400;flex-shrink:0}
+details[open] summary::after{content:'−'}
+summary:hover{background:var(--bg2)}
+details .body{padding:0 20px 18px;font-size:14.5px;color:var(--ink2);line-height:1.62}
+details .body p:last-child{margin-bottom:0}
+
+/* ---------- roadmap ---------- */
+.rm{position:relative;padding-left:30px}
+.rm::before{content:'';position:absolute;left:8px;top:8px;bottom:8px;width:2px;background:var(--line)}
+.rmi{position:relative;padding:0 0 22px}
+.rmi::before{content:'';position:absolute;left:-27px;top:6px;width:11px;height:11px;border-radius:50%;
+  background:#fff;border:2.5px solid var(--acc)}
+.rmi.g::before{border-color:var(--mvp)}
+.rmi .h{font-size:15px;font-weight:650;margin-bottom:3px}
+.rmi .m{font-family:var(--mono);font-size:11.5px;color:var(--acc2);margin-bottom:5px}
+.rmi p{font-size:14px;margin:0}
+
+footer{padding:38px 0;color:var(--ink3);font-size:13.5px}
+footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+
+@media(max-width:760px){
+  header h1{font-size:32px} header{padding-top:48px}
+  .step{grid-template-columns:60px 1fr;gap:10px}
+  .step .who{display:none}
+  h2{font-size:23px}
+}
+@media print{
+  nav{display:none} section{break-inside:avoid;padding:26px 0}
+  details{break-inside:avoid} details .body{display:block!important}
+  header{background:#1f4e79!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <b>БЗПО</b>
+  <a href="#task">Задача</a>
+  <a href="#arch">Архитектура</a>
+  <a href="#pipe">Конвейер</a>
+  <a href="#stack">Стек</a>
+  <a href="#dec">Решения</a>
+  <a href="#scope">PoC / MVP+</a>
+  <a href="#metrics">Метрики</a>
+  <a href="#open">Открытые вопросы</a>
+  <a href="#road">План</a>
+</div></nav>
+
+<header>
+  <div class="wrap">
+    <div class="tag">Техническая концепция · версия 2.6</div>
+    <h1>Интеллектуальная база<br>знаний проектного опыта</h1>
+    <p class="lead">RAG-система, которая по запросу на естественном языке собирает <b>готовый раздел коммерческого предложения или отчёта</b> из корпуса прошлых проектов — с точными ссылками на документы-первоисточники и на подтверждающие артефакты.</p>
+    <div class="kpis">
+      <div class="kpi"><div class="n">12 500</div><div class="l">страниц в корпусе<br>25 документов</div></div>
+      <div class="kpi"><div class="n">~20 тыс.</div><div class="l">чанков после<br>индексации</div></div>
+      <div class="kpi"><div class="n">17–60 с</div><div class="l">расчётная латентность<br>при бюджете 60 с</div></div>
+      <div class="kpi"><div class="n">14–16 ГБ</div><div class="l">VRAM, карта 24 ГБ<br>on-premise</div></div>
+      <div class="kpi"><div class="n">5–6 мес</div><div class="l">от старта<br>до конца PoC</div></div>
+    </div>
+  </div>
+</header>
+
+<!-- ================= ЗАДАЧА ================= -->
+<section id="task">
+<div class="wrap">
+  <div class="eyebrow">Задача</div>
+  <h2>Три сценария, один конвейер</h2>
+  <p class="sub">Ключевой объект системы — «подход»: способ, которым компания решала задачу. В документах он нигде не обозначен явно и представляет собой композицию, разнесённую по разделам и документам.</p>
+
+  <div class="grid g3">
+    <div class="card">
+      <div class="num">СЦЕНАРИЙ А</div>
+      <h4>Тендерная заявка</h4>
+      <p>Комбинация Б и В. Решающим является подтверждение опыта, описание подхода его дополняет. Приоритет при сборке контекста — за подтверждениями.</p>
+    </div>
+    <div class="card">
+      <div class="num">СЦЕНАРИЙ Б</div>
+      <h4>Описание подхода</h4>
+      <p>Методологический раздел отчёта, опирающийся на реально применённые в прошлых проектах подходы, со ссылками на проекты.</p>
+    </div>
+    <div class="card">
+      <div class="num">СЦЕНАРИЙ В</div>
+      <h4>Подтверждение опыта</h4>
+      <p>Точный перечень проектов с реквизитами и ссылками на акты и благодарственные письма. Данные берутся из реестра, а не из текста.</p>
+    </div>
+  </div>
+
+  <div class="note"><b>Следствие для архитектуры.</b> Все три сценария — это генерация текста <b>по образцу</b>, а не вопросно-ответная система. Отсюда два индекса (чанковый и секционный), декомпозиция запроса по граням подхода и подача целых разделов прошлых документов как образцов структуры и стиля.</div>
+</div>
+</section>
+
+<!-- ================= АРХИТЕКТУРА ================= -->
+<section id="arch" class="alt">
+<div class="wrap">
+  <div class="eyebrow">Архитектура</div>
+  <h2>Пять слоёв</h2>
+  <p class="sub">Первый работает офлайн при загрузке документа, остальные четыре — на каждый запрос. Слой подготовки данных (парсинг, OCR, таблицы, разметка публичности) вынесен в отдельный документ.</p>
+
+  <table>
+    <tr><th style="width:22%">Слой</th><th style="width:14%">Режим</th><th>Содержание</th><th style="width:22%">Чем выполняется</th></tr>
+    <tr><td style="color:var(--ink3)"><i>Подготовка данных</i></td><td>офлайн</td>
+        <td style="color:var(--ink3)"><i>Классификация страниц, парсинг, OCR, таблицы, разметка публичности — часть 1</i></td>
+        <td><span class="pill own">наш</span> Docling, Tesseract</td></tr>
+    <tr><td>1 · Индексация</td><td>офлайн</td>
+        <td>Чанкинг по структуре, обогащение контекстом, метаданные, векторизация в два индекса, дедупликация, полнотекстовый индекс</td>
+        <td><span class="pill ext">внешний</span> bge-m3<br><span class="pill own">наш</span> GigaChat, PG</td></tr>
+    <tr><td>2 · Хранилище</td><td>—</td>
+        <td>Единая база: векторы, полнотекстовый индекс, метаданные чанков, БД подтверждений</td>
+        <td><span class="pill own">наш</span> PostgreSQL + pgvector</td></tr>
+    <tr><td>3 · Разбор запроса</td><td>4–8 с</td>
+        <td>Классификация типа задачи, выбор шаблона плана, декомпозиция по граням подхода, генерация гипотез HyDE</td>
+        <td><span class="pill own">наш</span> GigaChat, Jinja2</td></tr>
+    <tr><td>4 · Поиск</td><td>0,3–0,7 с</td>
+        <td>Два ключа на грань → векторный и полнотекстовый поиск → взвешенный RRF → реранкинг → boost → MMR. Параллельно секционная ветвь и SQL к реестру</td>
+        <td><span class="pill ext">внешний</span> bge-m3, reranker<br><span class="pill own">наш</span> PostgreSQL</td></tr>
+    <tr><td>5 · Генерация</td><td>7–28 с</td>
+        <td>Сборка контекста, шаблон раздела, генерация с маркерами, два списка ссылок, фильтр публичности</td>
+        <td><span class="pill own">наш</span> GigaChat-20B-A3B</td></tr>
+  </table>
+
+  <div class="note o"><b>Внешним является только сервис эмбеддингов и реранкинга.</b> Генеративная модель, PostgreSQL и Langfuse разворачиваются на собственном оборудовании. Обращения к внешнему сервису изолированы в отдельном модуле с двумя взаимозаменяемыми реализациями — переезд на локальный хостинг выполняется сменой конфигурации.</div>
+</div>
+</section>
+
+<!-- ================= КОНВЕЙЕР ================= -->
+<section id="pipe">
+<div class="wrap">
+  <div class="eyebrow">Конвейер</div>
+  <h2>Последовательность шагов</h2>
+  <p class="sub">Нотация EPC: события — состояния процесса, блоки — функции обработки.</p>
+
+  <div class="legend">
+    <span><i style="background:var(--acc)"></i>контур PoC</span>
+    <span><i style="background:var(--mvp-l);border:1px dashed var(--mvp)"></i>MVP+</span>
+    <span><i style="background:#fbfcfd;border:1px dashed #c3ccd4"></i>часть 1 — подготовка данных</span>
+    <span><i style="background:var(--evt-l);border:1px solid #e6d3a0"></i>событие</span>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-p="off">Офлайн · индексация</button>
+    <button role="tab" aria-selected="false" data-p="on">Онлайн · запрос</button>
+  </div>
+
+  <div class="pipe on" id="p-off">
+    <div class="evt"><span>Документ помещён в отслеживаемую папку</span></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Сопоставление файла с проектом реестра</div><div class="d">без проекта документ в индекс не попадает — умолчание «закрыт»</div></div><div class="who"><b>собственный код</b></div></div>
+    <div class="arrow"></div>
+    <div class="step p1"><div class="badge">часть 1</div><div><div class="t">Классификация типа страницы</div><div class="d">постранично: текст / скан. Тип документа берётся из реестра</div></div><div class="who"><b>Docling</b></div></div>
+    <div class="xor"><i>X</i><span>есть текстовый слой?</span></div>
+    <div class="step p1"><div class="badge">часть 1</div><div><div class="t">Парсинг или OCR</div><div class="d">восстановление иерархии заголовков, снятие колонтитулов</div></div><div class="who"><b>Docling</b>Tesseract 5</div></div>
+    <div class="arrow"></div>
+    <div class="step p1"><div class="badge">часть 1</div><div><div class="t">Выделение таблиц</div><div class="d">целиком в Markdown, неделимым блоком с подписью</div></div><div class="who"><b>Docling</b></div></div>
+    <div class="arrow"></div>
+    <div class="evt"><span>Структурированный текст получен</span></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Чанкинг по структуре документа</div><div class="d">500 токенов, overlap 15% только внутри раздела</div></div><div class="who"><b>токенизатор bge-m3</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Обогащение контекстом</div><div class="d">чанк + метаданные → 1–2 предложения. Кэш обязателен, фолбэк детерминированный</div></div><div class="who"><b>GigaChat-20B-A3B</b>ночь GPU однократно</div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Простановка метаданных</div><div class="d">проект, раздел, parent_section_id, диапазон страниц, публичность</div></div><div class="who"><b>собственный код</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Векторизация: два вектора, два индекса</div><div class="d">по обогащённому тексту — для поиска, по исходному — для дедупликации. Чанковый и секционный индексы</div></div><div class="who"><b>bge-m3</b>внешний сервис</div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Дедупликация типовых блоков</div><div class="d">по исходному вектору: близость &gt; 0,95 → связные компоненты</div></div><div class="who"><b>собственный код</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Полнотекстовый индекс</div><div class="d">to_tsvector('russian') — морфология из коробки</div></div><div class="who"><b>PostgreSQL</b></div></div>
+    <div class="arrow"></div>
+    <div class="evt"><span>Корпус проиндексирован</span></div>
+    <div class="arrow"></div>
+    <div class="step mvp"><div class="badge">MVP+</div><div><div class="t">Построение графа связей между чанками</div><div class="d">семантические рёбра поверх структурных и кластерных</div></div><div class="who"><b>bge-m3 + код</b>эксперимент: LightRAG</div></div>
+    <div class="arrow"></div>
+    <div class="evt"><span>Система готова обслуживать запросы</span></div>
+  </div>
+
+  <div class="pipe" id="p-on">
+    <div class="evt"><span>Пользователь сформулировал запрос</span></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Классификация типа задачи</div><div class="d">закрытый список типов, фиксируется уверенность</div></div><div class="who"><b>GigaChat-20B-A3B</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Выбор шаблона плана поиска</div><div class="d">детерминированно по типу задачи</div></div><div class="who"><b>Jinja2</b>шаблоны в git</div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Декомпозиция на грани подхода</div><div class="d">понимание задачи, методология, этапы, артефакты, риски, результат</div></div><div class="who"><b>Jinja2</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Генерация гипотез HyDE</div><div class="d">по одной на грань. В контекст генерации не попадают ни при каких условиях</div></div><div class="who"><b>GigaChat-20B-A3B</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Векторизация двух ключей на грань</div><div class="d">исходная формулировка И гипотеза</div></div><div class="who"><b>bge-m3</b>внешний сервис</div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Поиск по чанкам: 4 списка на грань</div><div class="d">вектор × 2 ключа, полнотекстовый × 2 ключа (дизъюнкция редких лемм по IDF)</div></div><div class="who"><b>PostgreSQL</b>pgvector + FTS</div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Поиск по секционному индексу</div><div class="d">параллельная ветвь: целые разделы как образцы структуры и стиля</div></div><div class="who"><b>PostgreSQL</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Объединение через взвешенный RRF</div><div class="d">запрос 1,0 / гипотеза 0,7 → 50 кандидатов. Провенанс каждого фиксируется</div></div><div class="who"><b>собственный код</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Реранкинг чанков и разделов</div><div class="d">cross-encoder; на вход подаётся исходный текст чанка</div></div><div class="who"><b>bge-reranker-v2-m3</b>внешний сервис</div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Boost по метаданным</div><div class="d">отрасль, выигранный тендер, свежесть документа</div></div><div class="who"><b>собственный код</b></div></div>
+    <div class="xor"><i>X</i><span>выше порога отсечения?</span></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Отбор с учётом разнообразия (MMR)</div><div class="d">8 чанков + 2 раздела-образца, λ = 0,7, нормировка обоих слагаемых</div></div><div class="who"><b>собственный код</b></div></div>
+    <div class="arrow"></div>
+    <div class="step mvp"><div class="badge">MVP+</div><div><div class="t">Расширение выдачи по графу связей</div><div class="d">добор соседних чанков: родитель, сосед, аналог. Глубина 1</div></div><div class="who"><b>PostgreSQL</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Запрос в БД подтверждений</div><div class="d">10–15 параметризованных запросов, не text2SQL</div></div><div class="who"><b>PostgreSQL</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Фильтр публичности</div><div class="d">ALLOWED_PUBLICITY; на PoC только проекты уровня «открытый»</div></div><div class="who"><b>PostgreSQL</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Сборка промпта по шаблону раздела</div><div class="d">образцы → факты → чанки. Бюджет 12 000 токенов при окне 16 384</div></div><div class="who"><b>Jinja2</b></div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Генерация текста раздела</div><div class="d">с обязательными маркерами источников [N]</div></div><div class="who"><b>GigaChat-20B-A3B</b>наш сервер</div></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Формирование двух списков</div><div class="d">«Источники» — фрагменты текста. «Подтверждения» — акты, договоры, письма</div></div><div class="who"><b>собственный код</b></div></div>
+    <div class="arrow"></div>
+    <div class="step mvp"><div class="badge">MVP+</div><div><div class="t">Обезличивание и контроль NDA</div><div class="d">инструкция генерации + сверка результата со списком закрытых наименований</div></div><div class="who"><b>GigaChat + код</b></div></div>
+    <div class="arrow"></div>
+    <div class="evt"><span>Текст выдан пользователю</span></div>
+    <div class="arrow"></div>
+    <div class="step"><div class="badge">PoC</div><div><div class="t">Запись трассы и сбор обратной связи</div><div class="d">все стадии, провенанс кандидатов, пометки «не по делу»</div></div><div class="who"><b>Langfuse</b>наш сервер</div></div>
+  </div>
+</div>
+</section>
+
+<!-- ================= СТЕК ================= -->
+<section id="stack" class="alt">
+<div class="wrap">
+  <div class="eyebrow">Стек</div>
+  <h2>Что где работает</h2>
+
+  <div class="grid g2">
+    <div class="card">
+      <div class="num">ВНЕШНИЙ СЕРВИС · ОБЩАЯ A100</div>
+      <h4>Эмбеддинги и реранкинг</h4>
+      <p><code>BAAI/bge-m3</code> — вектор 1024, контекст 8192, русский родной.<br>
+      <code>BAAI/bge-reranker-v2-m3</code> — cross-encoder того же семейства.<br><br>
+      OpenAI-совместимый эндпоинт. SLA отсутствует, health-эндпоинта нет — применяется синтетическая проба. Модели зафиксированы, свои поднять нельзя.</p>
+    </div>
+    <div class="card">
+      <div class="num">НАШ СЕРВЕР · КАРТА 24 ГБ</div>
+      <h4>Генерация</h4>
+      <p><code>GigaChat-20B-A3B</code>, квантизация q4_K_M, Ollama.<br><br>
+      MoE: активны 3 из 20 млрд параметров. Обучена на русском с нуля. <b>Рабочее окно 16 384 токена</b> (<code>num_ctx</code>), а не 131 тыс. из карточки: KV-кэш при таком окне превышает доступную память.</p>
+    </div>
+    <div class="card">
+      <div class="num">НАШ СЕРВЕР</div>
+      <h4>Хранилище</h4>
+      <p>PostgreSQL 16 + pgvector + полнотекстовый индекс <code>russian</code>.<br><br>
+      <b>ANN-индекс не создаётся:</b> 20 тыс. векторов по 1024 измерения — это 82 МБ и точный перебор за миллисекунды. Полнота выдачи индекса равна 100% по построению.</p>
+    </div>
+    <div class="card">
+      <div class="num">НАШ СЕРВЕР</div>
+      <h4>Наблюдаемость</h4>
+      <p>Langfuse self-hosted, docker-compose.<br><br>
+      Трассы со вложенными стадиями, версионирование промптов, эталонные датасеты, прогоны экспериментов. Разворачивается <b>до</b> начала измерений, на этапе 3.</p>
+    </div>
+  </div>
+
+  <h3>Расчёт видеопамяти</h3>
+  <table>
+    <tr><th>Компонент</th><th>Где работает</th><th style="width:24%">Наша VRAM</th></tr>
+    <tr><td>Эмбеддинги · bge-m3</td><td>внешний сервис</td><td><b>0</b></td></tr>
+    <tr><td>Реранкинг · bge-reranker-v2-m3</td><td>внешний сервис</td><td><b>0</b></td></tr>
+    <tr><td>Генерация · GigaChat-20B-A3B q4_K_M</td><td>наш сервер, Ollama</td><td>≈ 12 ГБ</td></tr>
+    <tr><td>KV-кэш при окне 16 тыс. токенов</td><td>наш сервер</td><td>2–4 ГБ</td></tr>
+    <tr><td>Langfuse, PostgreSQL</td><td>наш сервер</td><td>0 · CPU</td></tr>
+    <tr style="background:var(--ok-l)"><td><b>Итого</b></td><td></td><td><b>14–16 ГБ</b> → карта 24 ГБ</td></tr>
+  </table>
+  <div class="note">Запас до 24 ГБ оставлен намеренно: он позволяет при необходимости перенести эмбеддинги и реранкер на своё оборудование (+3,5 ГБ) и полностью снять внешнюю зависимость.</div>
+</div>
+</section>
+
+<!-- ================= РЕШЕНИЯ ================= -->
+<section id="dec">
+<div class="wrap">
+  <div class="eyebrow">Технические решения</div>
+  <h2>Почему именно так</h2>
+  <p class="sub">Развилки, по которым чаще всего возникают вопросы.</p>
+
+  <details open><summary>Почему нет LLM-роутера, выбирающего источник данных</summary>
+    <div class="body"><p>Роутер решал задачу «куда идти» — в векторную базу, в реестр или в оба. Задача устранима: при 20 тыс. чанков обращение к обоим источникам стоит десятки миллисекунд. Роутер добавлял вызов модели перед каждым запросом, собственный класс ошибок и точность классификации, которую никто не измерял.</p>
+    <p><b>Слой разбора запроса — это другое.</b> Он решает «что искать», а не «куда идти». Эта задача не устраняется: запрос и документы написаны разными словами, и никакое количество параллельных обращений разрыв в словаре не закроет.</p></div>
+  </details>
+
+  <details><summary>Почему у чанка два вектора</summary>
+    <div class="body"><p>Основной вектор строится по обогащённому тексту — с приписанным контекстом «фрагмент из КП для заказчика X, 2024, раздел про методологию». Это существенно повышает полноту поиска.</p>
+    <p>Но обогащение приписывает каждой копии типового блока своего заказчика и свой год. Близость копий падает ниже порога, и дедупликация перестаёт срабатывать ровно на том сценарии, ради которого вводилась: десять почти одинаковых абзацев про методологию из десяти предложений.</p>
+    <p><b>Поэтому вспомогательный вектор считается по исходному тексту</b> и используется для дедупликации, отбора разнообразия и семантических рёбер графа.</p></div>
+  </details>
+
+  <details><summary>Что такое HyDE и почему поиск идёт двумя ключами</summary>
+    <div class="body"><p>Запрос пользователя — это вопрос, а корпус состоит из ответов; написаны они разными словами. HyDE устраняет асимметрию: модель пишет гипотетический фрагмент документа — как выглядел бы ответ, если бы существовал, — и поиск ведётся по его вектору. Правильность содержания роли не играет, гипотеза работает как поисковый ключ, а не как утверждение.</p>
+    <p><b>Инвариант:</b> гипотеза не попадает в контекст генерации ни при каких условиях. Её жизненный цикл — сгенерирована, векторизована, использована для поиска, уничтожена. В журнал пишется полностью. Инвариант защищён автотестом и рантайм-ассертом.</p>
+    <p>Известное ограничение: если модель написала гипотезу в терминах распространённой отраслевой практики, а компания работает по-своему, вектор уводит поиск в сторону. Поэтому поиск идёт <b>двумя ключами</b> — исходной формулировкой и гипотезой, — а списки объединяются взвешенным RRF с весами 1,0 и 0,7. При простом RRF кандидат исходного запроса мог бы вытесняться из среза 50.</p></div>
+  </details>
+
+  <details><summary>Почему параметризованные запросы, а не text2SQL</summary>
+    <div class="body"><p>Локальная квантизованная модель генерирует SQL по русскоязычным запросам ненадёжно, а ошибка проявляется как молча неверный ответ — самый опасный класс дефектов для тендерной заявки.</p>
+    <p>10–15 параметризованных запросов покрывают реальные сценарии: опыт в отрасли, проекты за период, наличие артефакта по заказчику, проекты с суммой выше порога. Модель выбирает шаблон и подставляет параметры; сам запрос детерминирован и покрыт тестами. Фильтр публичности встроен в каждый шаблон.</p></div>
+  </details>
+
+  <details><summary>Граф: что принято, а что отклонено</summary>
+    <div class="body"><p>Это два разных объекта, которые называют одним словом.</p>
+    <p><b>Граф сущностей (GraphRAG) — отклонён.</b> Он извлекается из текста языковой моделью с точностью 85–92%, ошибаясь прежде всего на наименованиях организаций и суммах. При этом такой граф в системе уже есть — это БД подтверждений со связями «проект → заказчик → отрасль → технологии → артефакты → результат». Она заполняется человеком, и при 25 проектах это преимущество: точность 100%.</p>
+    <p><b>Граф связей между чанками — принят на MVP+.</b> Узлы — существующие чанки, рёбра — вложенность, соседство, идентичность, семантическая близость. Три типа рёбер из пяти уже есть как побочный результат индексации: parent_section_id, кластеры дедупликации, метаданные проекта. Недостаёт семантических, которые считаются одним матричным умножением.</p>
+    <p>LightRAG — самостоятельный эксперимент после PoC, в архитектуру не встраивается.</p></div>
+  </details>
+
+  <details><summary>Зачем порог отсечения и почему он на оценке реранкера</summary>
+    <div class="body"><p>Гипотеза HyDE по построению всегда находит что-нибудь похожее. Без порога система физически не сможет ответить «не найдено» и будет собирать текст из ближайшего попавшегося.</p>
+    <p>Порог ставится на оценке cross-encoder, а не на косинусной близости: первая откалибрована (0,9 означает «уверенно да», 0,01 — «уверенно нет»), вторая нет — осмысленные тексты кучкуются в узкой полосе 0,6–0,9, и абсолютное значение почти ничего не говорит.</p>
+    <p>Значение калибруется минимум на 15 запросах, ответа на которые в корпусе заведомо нет.</p></div>
+  </details>
+
+  <details><summary>Почему без приближённых индексов</summary>
+    <div class="body"><p>20 тыс. векторов по 1024 измерения — 82 МБ. Точный перебор реализуется одним матричным умножением и занимает миллисекунды. HNSW и IVF теряют 2–10% истинных ближайших соседей на каждом запросе.</p>
+    <p>Практическая ценность: при точном поиске полнота выдачи индекса равна 100% по построению. Если нужный фрагмент не найден, причина заведомо в чанкинге или эмбеддинге, а не в настройках индекса — из списка подозреваемых вычёркивается целый класс трудноуловимых ошибок.</p>
+    <p>Переход на HNSW имеет смысл примерно от миллиона векторов и выполняется одной командой создания индекса.</p></div>
+  </details>
+</div>
+</section>
+
+<!-- ================= SCOPE ================= -->
+<section id="scope" class="alt">
+<div class="wrap">
+  <div class="eyebrow">Границы</div>
+  <h2>Что входит в PoC, а что нет</h2>
+  <p class="sub">В PoC входит всё, без чего невозможно измерить базовое качество, и всё, что проверяет заявленные гипотезы. За его пределы вынесено то, что улучшает уже работающую систему либо оценивается только в сравнении с базовой линией.</p>
+
+  <table>
+    <tr><th style="width:46%">Компонент</th><th style="width:16%">Контур</th><th>Основание</th></tr>
+    <tr><td>Чанкинг, метаданные, дедупликация</td><td><span class="pill poc">PoC</span></td><td>База конвейера</td></tr>
+    <tr><td>Обогащение контекстом</td><td><span class="pill poc">PoC</span></td><td>Наибольший прирост полноты при малых затратах</td></tr>
+    <tr><td>Два индекса: чанковый и секционный</td><td><span class="pill poc">PoC</span></td><td>Секционный необходим для генерации по образцу</td></tr>
+    <tr><td>Гибридный поиск, RRF, реранкинг, MMR, порог</td><td><span class="pill poc">PoC</span></td><td>Ядро поиска</td></tr>
+    <tr><td>Декомпозиция по граням и HyDE</td><td><span class="pill poc">PoC</span></td><td>Проверяемые гипотезы, замер на этапе 3.5</td></tr>
+    <tr><td>БД подтверждений, фильтр публичности</td><td><span class="pill poc">PoC</span></td><td>Основной источник для тендерных заявок</td></tr>
+    <tr><td>Маркеры [N], два списка ссылок</td><td><span class="pill poc">PoC</span></td><td>Требование к формату результата</td></tr>
+    <tr><td>Трассировка Langfuse</td><td><span class="pill poc">PoC</span></td><td>Разворачивается до начала измерений</td></tr>
+    <tr><td>Обезличивание и сверка результата</td><td><span class="pill mvp">MVP</span></td><td>Избыточно сложно для PoC, компенсируется вычиткой</td></tr>
+    <tr><td>Жёсткий фильтр по явному выбору пользователя</td><td><span class="pill mvp">MVP+</span></td><td>Требует проработанного интерфейса</td></tr>
+    <tr><td>Граф связей и расширение выдачи</td><td><span class="pill mvp">MVP+</span></td><td>Оценивается только относительно базовой линии</td></tr>
+    <tr><td>Предварительные резюме документов</td><td><span class="pill mvp">MVP+</span></td><td>Закрывает глобальные запросы, не блокирует сценарии</td></tr>
+    <tr><td>Перенос эмбеддингов на своё оборудование</td><td><span class="pill mvp">MVP+</span></td><td>Только при систематических сбоях внешнего сервиса</td></tr>
+  </table>
+
+  <div class="note w"><b>Следствие для PoC, которое нужно принять явно.</b> Рубежи обезличивания вынесены в MVP, поэтому любой исходящий документ вычитывается человеком без исключений, а проекты уровня «обезличенный» исключаются конфигурацией <code>ALLOWED_PUBLICITY = ['open']</code> — не переводом статуса в базе, иначе разметка публичности необратимо потеряется.</div>
+</div>
+</section>
+
+<!-- ================= МЕТРИКИ ================= -->
+<section id="metrics">
+<div class="wrap">
+  <div class="eyebrow">Оценка</div>
+  <h2>Как измеряется качество</h2>
+  <p class="sub">Метрики поиска считаются детерминированно, без участия языковых моделей. Оптимизировать следует в первую очередь их: при качественном контексте генерация почти всегда приемлема, обратное неверно.</p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h4>Поиск · без LLM</h4>
+      <p>Recall@50 ≥ 0,95 · Recall@8 ≥ 0,85 по медиане · Recall@8 по каждой грани ≥ 0,80 · MRR ≥ 0,7 · доля уникальных кластеров в топ-8 ≥ 0,75.<br><br>
+      <b>Recall@K_ctx</b> — полнота на итоговом контексте при равном бюджете токенов. Единственная метрика, пригодная для сравнения конфигураций с разным числом граней.</p>
+    </div>
+    <div class="card">
+      <h4>Слой разбора запроса</h4>
+      <p>Прирост Recall@K_ctx от декомпозиции и отдельно от HyDE · доля финальных чанков, найденных только гипотезой · точность классификации типа задачи · доля запросов, где HyDE ухудшил выдачу.<br><br>
+      <b>Отсутствие прироста означает отключение слоя флагом конфигурации.</b></p>
+    </div>
+    <div class="card">
+      <h4>Генерация</h4>
+      <p>Faithfulness · точность цитирования · доля корректных отказов · <b>нарушения публичности — строго 0</b>.<br><br>
+      Судья на PoC — человек: два РП, 100–150 ответов по фиксированному чек-листу, пересечение 30 ответов, согласованность ≥ 0,7. Автоматическая оценка не может выполняться той же моделью, что генерирует.</p>
+    </div>
+    <div class="card">
+      <h4>Продуктовые · главные</h4>
+      <p><b>Доля текста, оставленная без правок</b> — единственный честный ответ на вопрос, полезна ли система.<br><br>
+      Календарное время подготовки документа (базовая линия 3–5 дней) · частота обращений · доля запросов без результата.</p>
+    </div>
+  </div>
+
+  <div class="note"><b>Эталонный датасет — на устойчивых якорях, а не на идентификаторах чанков.</b> Идентификаторы пересоздаются при каждой смене параметров чанкинга, а сравнение вариантов чанкинга и есть главное назначение датасета. Якорь — это документ, раздел или диапазон страниц и цитата в 1–2 предложения; он разрешается в чанки текущей версии индекса отдельным резолвером. Объём 100–150 пар, формулировки пользователя. Трудоёмкость якорной разметки — 3–5 рабочих дней.</div>
+
+  <div class="note w"><b>Критерий регрессии — парное сравнение, а не разница точечных оценок.</b> На 100–150 запросах разница в 3 процентных пункта лежит внутри статистического шума: гейт срабатывал бы на случайных колебаниях и его быстро начали бы игнорировать. Прогон выполняется на тех же самых запросах до и после изменения, доверительный интервал разности строится бутстрэпом.</div>
+</div>
+</section>
+
+<!-- ================= ОТКРЫТЫЕ ================= -->
+<section id="open" class="alt">
+<div class="wrap">
+  <div class="eyebrow">Статус</div>
+  <h2>Открытые вопросы</h2>
+  <p class="sub">Часть положений концепции — гипотезы, которые могут не подтвердиться. Ниже то, что не закрыто на момент версии 2.6.</p>
+
+  <h3>Блокирующие · без ответа нельзя начинать разработку</h3>
+  <table>
+    <tr><th style="width:34%">Вопрос</th><th>На что влияет</th><th style="width:20%">Кто отвечает</th></tr>
+    <tr><td>Диалект эндпоинта реранкера</td><td>Два несовместимых формата запроса. Определяется скриптом разведки, ответ владельца не требуется</td><td>проектная команда</td></tr>
+    <tr><td>Батч пар реранкера за вызов</td><td>6 граней × 50 кандидатов = 300 пар. При одной паре за вызов и лимите 20 rps только реранкинг займёт 15 с и перевернёт расчёт латентности</td><td>владелец сервиса</td></tr>
+    <tr><td>Проба GigaChat-20B-A3B</td><td>Существование сборки q4_K_M, поддержка MoE, шаблон чата, фактическая скорость. На этих допущениях стоит весь расчёт латентности</td><td>проектная команда · полдня</td></tr>
+    <tr><td>Закупка GPU: владелец и срок</td><td>Без карты этапы 2 и далее не стартуют. Срок поставки не заложен в календарь</td><td><b style="color:var(--warn)">не назначен</b></td></tr>
+    <tr><td>Якорная разметка датасета</td><td>Возможность что-либо измерить. 3–5 рабочих дней выделенного человека</td><td><b style="color:var(--warn)">не назначен</b></td></tr>
+    <tr><td>JSON-схема контракта с частью 1</td><td>Формат передачи структурированного документа. Без неё модуль индексации нельзя начинать</td><td>проектная команда</td></tr>
+    <tr><td>Доля корпуса в статусе «открытый»</td><td><b>Стоп-гейт:</b> при доле ниже 60% жизнеспособность PoC пересматривается — материала для генерации не хватит</td><td>владельцы проекта</td></tr>
+  </table>
+
+  <h3>Технические гипотезы · проверяются замером</h3>
+  <table>
+    <tr><th style="width:36%">Гипотеза</th><th>Что если не подтвердится</th></tr>
+    <tr><td>Декомпозиция по граням повышает полноту</td><td>Слой разбора упрощается до одного подзапроса</td></tr>
+    <tr><td>HyDE добавляет релевантных кандидатов</td><td>Отключается, поиск идёт одним ключом</td></tr>
+    <tr><td>Граф связей уточняет выход на нужные разделы</td><td>Расширение отключается, рёбра остаются справочной структурой</td></tr>
+    <tr><td>Корпуса из 25 документов достаточно</td><td>Расширение корпуса: методички, презентации, отчёты</td></tr>
+    <tr><td>Порог дедупликации 0,95 не схлопывает вариации</td><td>Порог поднимается до 0,97</td></tr>
+  </table>
+
+  <div class="note w"><b>Латентность укладывается в бюджет впритык.</b> Расчётные 17–60 с при бюджете 60 с. Причина — восемь последовательных вызовов генеративной модели на один запрос: классификация, извлечение параметров, шесть гипотез. Ollama обрабатывает запросы последовательно, поэтому второй одновременный пользователь ждёт. Компенсаторы: одна гипотеза на две смежные грани, объединение классификации и извлечения параметров в один вызов, отказ от гипотез для граней без прироста, переход на vLLM.</div>
+</div>
+</section>
+
+<!-- ================= ПЛАН ================= -->
+<section id="road">
+<div class="wrap">
+  <div class="eyebrow">План</div>
+  <h2>Дорожная карта PoC</h2>
+  <p class="sub">5–6 месяцев при одном разработчике на основной линии. Оценка предполагает, что этап 1 не выявит массовых проблем с распознаванием.</p>
+
+  <div class="rm">
+    <div class="rmi"><div class="h">Этап 0 · Подготовка</div><div class="m">2–3 недели</div>
+      <p>Сбор формулировок и якорная разметка датасета. Поле «результат тендера» и уровень публичности, ретроспективное заполнение. Сопоставление файлов с проектами. Проба GigaChat. Решение по GPU. Схема контракта с частью 1. Прогон разведки внешнего сервиса.<br>
+      <b>Критерий:</b> ≥90% якорей разрешаются в чанки, проба модели пройдена, заказ на GPU размещён, диалект реранкера зафиксирован.</p></div>
+    <div class="rmi"><div class="h">Этап 0.5 · Каркас</div><div class="m">1 неделя</div>
+      <p>Модуль изоляции внешних вызовов, механизм миграций, конфигурация с валидацией при старте, структура проекта с границами модулей.<br>
+      <b>Критерий:</b> мок внешнего сервиса работает, автотесты каркаса зелёные.</p></div>
+    <div class="rmi"><div class="h">Этап 1 · Подготовка данных</div><div class="m">4–6 недель · часть 1</div>
+      <p>Парсинг, OCR, таблицы, разметка публичности. <b>Контрольная точка проекта:</b> результат на трёх самых сложных документах может изменить оценку сроков всего проекта.<br>
+      <b>Критерий:</b> полнота индексации ≥ 95%.</p></div>
+    <div class="rmi"><div class="h">Этап 2 · Конвейер индексации</div><div class="m">2–3 недели</div>
+      <p>Чанкинг, обогащение с кэшем, метаданные, векторизация, дедупликация, полнотекстовый индекс. Выборочная проверка обогащения на 50 чанках до полного прогона.<br>
+      <b>Критерий:</b> двойной прогон идемпотентен, ≥98% чанков в границах размера, ни одного чанка без проекта.</p></div>
+    <div class="rmi"><div class="h">Этап 3 · Базовый поиск</div><div class="m">1–2 недели</div>
+      <p>Langfuse и трассировка — до начала измерений. Гибридный поиск, RRF, реранкинг, MMR, порог отсечения. Замер <b>без слоя разбора</b> — это базовая линия для всего последующего.<br>
+      <b>Критерий:</b> медианный Recall@8 ≥ 0,85, замерены p50 и p95 по стадиям.</p></div>
+    <div class="rmi"><div class="h">Этап 3.5 · Слой разбора запроса</div><div class="m">1–2 недели</div>
+      <p>Декомпозиция по граням и HyDE с двумя ключами. Замер прироста относительно базовой линии этапа 3.<br>
+      <b>Критерий:</b> прирост Recall@K_ctx при равном бюджете статистически значим по парному критерию. Иначе слой отключается флагом.</p></div>
+    <div class="rmi"><div class="h">Этап 4 · Генерация</div><div class="m">2–3 недели</div>
+      <p>Секционная ветвь и отбор образцов, шаблоны разделов, маркеры и два списка, фильтр публичности. Интерфейс: пометка «не по делу», загрузка итогового документа.<br>
+      <b>Критерий:</b> автотесты зелёные — валидатор маркеров, фильтр публичности, инвариант HyDE, пары план↔раздел.</p></div>
+    <div class="rmi"><div class="h">Этап 5 · Оценка</div><div class="m">1 неделя</div>
+      <p>Человеческая оценка 100–150 ответов двумя РП по чек-листу, пересечение 30 ответов.<br>
+      <b>Критерий:</b> согласованность оценщиков ≥ 0,7, базовые значения метрик зафиксированы.</p></div>
+    <div class="rmi"><div class="h">Этап 6 · Опытная эксплуатация</div><div class="m">4 недели</div>
+      <p>Доступ для 12 РП и 6 директоров. Сбор обратной связи, первый разбор трасс по регламенту.<br>
+      <b>Критерий:</b> измерена доля текста, оставленная без правок.</p></div>
+    <div class="rmi g"><div class="h">Этап 7 · Эксперимент с графом</div><div class="m">2–3 дня · после PoC</div>
+      <p>LightRAG на том же корпусе и датасете, собственная онтология, разрешение сущностей через справочник заказчиков.<br>
+      <b>Ранняя остановка:</b> при доле изолированных узлов выше 40% эксперимент закрывается.</p></div>
+  </div>
+</div>
+</section>
+
+<footer><div class="wrap">
+  <span>Интеллектуальная база знаний проектного опыта · техническая концепция v2.6</span>
+  <span>Часть 2 из 2 · конвейер поиска и генерации</span>
+</div></footer>
+
+<script>
+document.querySelectorAll('.tabs button').forEach(function(b){
+  b.addEventListener('click', function(){
+    document.querySelectorAll('.tabs button').forEach(function(x){ x.setAttribute('aria-selected','false'); });
+    b.setAttribute('aria-selected','true');
+    document.querySelectorAll('.pipe').forEach(function(p){ p.classList.remove('on'); });
+    document.getElementById('p-' + b.dataset.p).classList.add('on');
+  });
+});
+</script>
+</body>
+</html>
