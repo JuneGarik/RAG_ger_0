@@ -61,6 +61,7 @@ python -m bzpo.generation approach "цель нового проекта" --area
 
 ```bash
 python -m bzpo.parsing convert data/samples                 # все файлы папки -> data/converted
+python -m bzpo.parsing convert отчёт.pptx --vlm             # + разбор изображений (LibreOffice, Qwen3-VL)
 python -m bzpo.parsing check data/samples/отчёт.pptx data/samples/отчёт.md
 ```
 
