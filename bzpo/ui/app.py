@@ -15,7 +15,9 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
@@ -29,12 +31,21 @@ from bzpo.generation.approach import (
 )
 from bzpo.generation.run import MODES as MODES_PARAMS
 from bzpo.generation.run import generate_approach, save_draft, search_facets
-from bzpo.parsing.check import COVERAGE_MIN, DeckCheck, check
-from bzpo.parsing.convert import convert, sources
-from bzpo.parsing.detect import detect
+from bzpo.ingest.slides import _split_frontmatter
+from bzpo.parsing.check import COVERAGE_MIN, DeckCheck
+from bzpo.parsing.convert import convert
+from bzpo.parsing.render import RenderError
 from bzpo.providers.local import LocalEmbedder, LocalReranker
 from bzpo.providers.ollama import OllamaClient
-from bzpo.registry.workbook import file_key, registered_files
+from bzpo.registry.loader import load_registry
+from bzpo.registry.workbook import (
+    DocumentRow,
+    RegistryError,
+    add_document,
+    file_key,
+    is_registry,
+    registered_files,
+)
 from bzpo.search.query import SearchResult, search
 from bzpo.storage import repo
 
@@ -42,7 +53,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
 SAMPLES = DATA / "samples"
 DRAFTS = DATA / "drafts"
-DRAFTS_CONVERTED = DATA / "converted"
+SOURCES = DATA / "sources"  # оригиналы pptx/docx; в data/samples — только md и xlsx
 REGISTRY = DATA / "registry.xlsx"
 DOC_TYPES = {"Отчёт": "report", "КП": "kp", "Презентация": "presentation", "Акт": "act"}
 MODES = {"Тщательно (~3 мин)": "thorough", "Быстро (~2 мин)": "quick"}
@@ -343,33 +354,58 @@ def tab_search(scope: repo.SearchScope) -> None:
             st.markdown(c.text_raw)
 
 
+def _save_upload(name: str, data: bytes, directory: Path) -> Path:
+    """Сохранить загруженный файл, не перезаписывая существующий с другим содержимым."""
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / file_key(name)
+    if target.exists() and target.read_bytes() != data:
+        stem, suffix = target.stem, target.suffix
+        n = 2
+        while (directory / f"{stem}_{n}{suffix}").exists():
+            n += 1
+        target = directory / f"{stem}_{n}{suffix}"
+    target.write_bytes(data)
+    return target
+
+
 def tab_documents() -> None:
     st.header("Документы")
+    st.caption("Здесь только то, что уже в формате системы: md (сконвертированные документы) "
+               "и xlsx (реестр проектов). Презентации и Word загружаются на вкладке "
+               "«Конвертация» — там они превращаются в md.")
     with connection() as conn:
         documents = repo.list_documents(conn, repo.active_index_version(conn))
     in_db = {file_key(d.file_path): d for d in documents}
+
+    uploaded = st.file_uploader("Загрузить md или xlsx", type=["md", "xlsx"],
+                                accept_multiple_files=True, key="documents_upload")
+    for file in uploaded or []:
+        data = file.getvalue()
+        if file.name.lower().endswith(".xlsx"):
+            temporary = _save_upload(file.name, data, DATA / "cache" / "uploads")
+            if is_registry(temporary):
+                if REGISTRY.exists():
+                    backup = DATA / f"registry_backup_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+                    REGISTRY.replace(backup)
+                    st.info(f"Прежний реестр сохранён как {backup.name}")
+                temporary.replace(REGISTRY)
+                st.success("Реестр проектов заменён загруженным файлом.")
+            else:
+                saved = _save_upload(file.name, data, SAMPLES)
+                temporary.unlink(missing_ok=True)
+                st.success(f"Таблица сохранена: {saved.name} (в поиск не индексируется)")
+        else:
+            saved = _save_upload(file.name, data, SAMPLES)
+            st.success(f"Сохранён {saved.relative_to(ROOT)}")
     registry = registered_files(REGISTRY) if REGISTRY.exists() else {}
 
-    uploaded = st.file_uploader("Добавить файлы в data/samples (pptx, docx, md)",
-                                type=["pptx", "docx", "md"], accept_multiple_files=True)
-    for file in uploaded or []:
-        target = SAMPLES / file.name
-        if not target.exists():
-            target.write_bytes(file.getvalue())
-            st.success(f"Сохранён {target.relative_to(ROOT)}")
-
-    st.subheader("Файлы в data/samples")
+    st.subheader("Сохранённые документы")
     rows = []
-    # pptx/docx, у которого есть готовый md, представлен этим md — не дублируем.
-    files = [f for f in sources(SAMPLES)
-             if not (f.suffix.lower() in (".pptx", ".docx") and _md_for(f))]
-    for md in files:
-        detection = detect(md)
-        if not detection.supported:
-            rows.append({"Файл": md.name, "Формат": detection.format, "Проект": "—",
-                         "Состояние": f"⛔ {detection.method}"})
+    for path in sorted(p for p in SAMPLES.iterdir() if p.suffix.lower() in (".md", ".xlsx")):
+        if path.suffix.lower() == ".xlsx":
+            rows.append({"Файл": path.name, "Проект": "—", "Состояние": "📊 таблица"})
             continue
-        key = file_key(md.relative_to(DATA).as_posix())
+        key = file_key(path.relative_to(DATA).as_posix())
         code, status = registry.get(key, (None, None))
         doc = in_db.get(key)
         if doc and doc.chunks:
@@ -380,15 +416,17 @@ def tab_documents() -> None:
             state = "✏️ черновик в реестре — проверьте строку в Excel"
         else:
             state = "🆕 нет в реестре"
-        rows.append({"Файл": md.name, "Формат": detection.format, "Проект": code or "—",
-                     "Состояние": state})
-    st.dataframe(rows, width="stretch", hide_index=True)
+        rows.append({"Файл": path.name, "Проект": code or "—", "Состояние": state})
+    if not rows:
+        st.info("Документов пока нет — загрузите презентацию или Word на вкладке «Конвертация».")
+    else:
+        st.dataframe(rows, width="stretch", hide_index=True)
 
-    new = [r["Файл"] for r in rows if r["Проект"] == "—" and not r["Состояние"].startswith("⛔")]
+    new = [r["Файл"] for r in rows if r["Проект"] == "—" and r["Файл"].endswith(".md")]
     col1, col2, col3 = st.columns(3)
     with col1:
-        target = st.selectbox("Новый файл", new, disabled=not new,
-                              placeholder="нет новых файлов", index=None)
+        target = st.selectbox("Новый документ", new, disabled=not new,
+                              placeholder="нет новых документов", index=None)
         if st.button("Черновик в реестр (GigaChat, 1–2 мин)", disabled=not target):
             run_command(["bzpo.registry", "draft", f"data/samples/{target}"],
                         "Черновик строки реестра")
@@ -397,16 +435,16 @@ def tab_documents() -> None:
         st.write("")
         if st.button("Открыть реестр в Excel"):
             subprocess.run(["open", str(REGISTRY)], check=False)
-            st.caption("Проверьте жёлтые и оранжевые ячейки и поставьте «проверено».")
+            st.caption("Проверьте жёлтые и оранжевые ячейки, поставьте «проверено», "
+                       "сохраните и закройте файл.")
     with col3:
         st.write("")
         st.write("")
         if st.button("Проиндексировать", type="primary"):
             run_command(["bzpo.ingest"], "Загрузка реестра и индексация")
-            st.cache_resource.clear()  # модели перезагрузятся при следующем запросе
 
     if documents:
-        st.subheader("В базе")
+        st.subheader("В поиске")
         st.dataframe(
             [{"Документ": d.title, "Тип": d.doc_type, "Заказчик": d.customer,
               "Фрагментов": d.chunks, "Статус": d.status} for d in documents],
@@ -414,20 +452,6 @@ def tab_documents() -> None:
         )
 
 
-def _name_key(path: Path) -> str:
-    """Ключ для сопоставления pptx и md: «отчет v1.2» и «отчет_v1_2» — один документ."""
-    return re.sub(r"[\W_]+", "", file_key(path.stem).lower())
-
-
-def _md_for(source: Path) -> Path | None:
-    """Готовый md для исходника (тот же документ, другое расширение)."""
-    return next((md for md in SAMPLES.glob("*.md")
-                 if md != source and _name_key(md) == _name_key(source)), None)
-
-
-def _pptx_for(md: Path) -> Path | None:
-    return next((p for p in SAMPLES.glob("*.pptx")
-                 if not p.name.startswith("~$") and _name_key(p) == _name_key(md)), None)
 
 
 def show_check(result: DeckCheck, markdown: str, needs_vlm: int) -> None:
@@ -460,84 +484,119 @@ def show_check(result: DeckCheck, markdown: str, needs_vlm: int) -> None:
             st.code(blocks.get(str(slide.slide), "(нет в md)").strip()[:3000], language="markdown")
 
 
+DOC_TYPE_LABELS = {"report": "Отчёт", "kp": "КП", "act": "Акт", "presentation": "Презентация",
+                   "contract": "Договор", "letter": "Письмо"}
+NEW_PROJECT = "Новый проект — черновик строки реестра (GigaChat)"
+
+
+def _verified_projects() -> dict[str, str]:
+    """Проверенные проекты реестра: подпись в списке -> код."""
+    if not REGISTRY.exists():
+        return {}
+    report = load_registry(REGISTRY, DATA)
+    return {f"{p.code} — {p.name[:70]}": p.code for p in report.projects}
+
+
 def tab_conversion() -> None:
-    st.header("Конвертация в md")
-    st.caption("Формат определяется по содержимому файла, способ разбора выбирается сам: "
-               "pptx — текст, таблицы, данные диаграмм, подписи по легенде и значения тепловых "
-               "карт из XML с проверкой; docx — заголовки, абзацы, таблицы, рисунки (похожие на "
-               "скриншоты слайдов отмечаются); готовый md — проверка разметки. Картинки по "
-               "желанию разбирает модель.")
-    files = sources(SAMPLES)
-    if not files:
-        st.info("В data/samples нет файлов. Добавьте их на вкладке «Документы».")
-        return
-    detections = {f: detect(f) for f in files}
-    st.dataframe(
-        [{"Файл": f.name, "Определён как": d.format, "Как будет разобран": d.method,
-          "Готовый md": (_md_for(f).name if d.format in ("pptx", "docx") and _md_for(f)
-                         else "—")}
-         for f, d in detections.items()],
-        width="stretch", hide_index=True,
-    )
-    source = st.selectbox("Файл", files, format_func=lambda p: p.name)
-    with_vlm = st.checkbox(
-        "Разобрать изображения моделью (pptx: ~20 с на слайд, нужен LibreOffice)",
-        help="Qwen3-VL пишет ключевой посыл, визуал и текст с картинок для слайдов, которые "
-             "код прочитать не может. Тепловые карты и подписи диаграмм определяет код по XML "
-             "— модель на них ошибалась. Ответы кэшируются: повторный запуск быстрый.",
-    )
-    if st.button("Конвертировать", type="primary"):
-        bar = st.progress(0.0, text="Разбор файла…") if with_vlm else None
+    st.header("Загрузка документа")
+    st.caption("Загрузите презентацию, Word или md. Формат определится сам; документ "
+               "превратится в md (текст, таблицы, данные и подписи диаграмм, тепловые карты — "
+               "из файла; картинки разбирает модель) и сохранится в data/samples. Оригинал "
+               "хранится в data/sources.")
+    upload = st.file_uploader("Документ", type=["pptx", "docx", "md"], key="convert_upload")
+    projects = _verified_projects()
+    project = st.selectbox("Проект", [NEW_PROJECT, *projects],
+                           help="Существующий проверенный проект — документ сразу добавится "
+                                "в реестр. Новый — GigaChat заполнит черновик строки, его нужно "
+                                "проверить в Excel.")
+    doc_type = st.selectbox("Тип документа", list(DOC_TYPE_LABELS),
+                            format_func=DOC_TYPE_LABELS.get, disabled=project == NEW_PROJECT,
+                            help="Для нового проекта тип определит GigaChat.")
+    index_now = st.checkbox("Сразу проиндексировать", value=True)
 
-        def on_slide(done: int, total: int, slide: int) -> None:
-            if bar is not None:
-                bar.progress(done / total, text=f"Модель: слайд {slide} ({done} из {total})")
-
-        result = convert(source, vlm=with_vlm, cache_dir=DATA / "cache", progress=on_slide)
-        target = None
-        if result.markdown is not None and result.detection.format in ("pptx", "docx"):
-            DRAFTS_CONVERTED.mkdir(parents=True, exist_ok=True)
-            target = DRAFTS_CONVERTED / f"{source.stem}.md"
-            target.write_text(result.markdown, encoding="utf-8")
-        elif result.detection.format == "md_slides" and _pptx_for(source):
-            # Готовый md презентации проверяется против её pptx, если он рядом.
-            result.check = check(_pptx_for(source), result.markdown or "")
-        st.session_state["conversion"] = (str(source), str(target) if target else None, result)
+    if st.button("Конвертировать", type="primary", disabled=upload is None):
+        _run_conversion(upload, project, projects, doc_type, index_now)
 
     state = st.session_state.get("conversion")
-    if not state or state[0] != str(source):
+    if state:
+        _show_conversion(*state)
+
+
+def _run_conversion(upload: Any, project: str, projects: dict[str, str], doc_type: str,
+                    index_now: bool) -> None:
+    data = upload.getvalue()
+    is_md = upload.name.lower().endswith(".md")
+    source = _save_upload(upload.name, data, SAMPLES if is_md else SOURCES)
+    target = SAMPLES / f"{source.stem}.md"
+    if not is_md and target.exists():
+        st.error(f"В data/samples уже есть {target.name}. Удалите его или переименуйте "
+                 "загружаемый файл, чтобы не держать в поиске две версии документа.")
         return
-    _, target, result = state
-    st.markdown(f"**Определён как:** {result.detection.format} ({result.detection.reason}). "
-                f"**Разбор:** {result.detection.method}.")
+
+    bar = st.progress(0.0, text="Разбор файла…")
+
+    def on_slide(done: int, total: int, slide: int) -> None:
+        bar.progress(done / total, text=f"Модель разбирает картинки: слайд {slide} "
+                                         f"({done} из {total})")
+
+    try:
+        result = convert(source, vlm=True, cache_dir=DATA / "cache", progress=on_slide)
+    except RenderError as exc:
+        st.warning(f"Картинки не разобраны ({exc}); документ сконвертирован без модели.")
+        result = convert(source)
+    bar.progress(1.0, text="Готово")
     if result.markdown is None:
-        st.error(result.error)
+        st.error(f"Не удалось сконвертировать: {result.error}")
         return
-    st.caption(result.notes)
-    if result.needs_vlm:
-        st.info(f"Разбор изображений (этап П2) понадобится: {result.needs_vlm} — до него "
-                "содержимое картинок и тепловых карт в поиске не участвует.")
+    if result.check is not None and not result.check.passed:
+        st.error("Проверка против исходного файла не пройдена — md не сохранён, чтобы неверные "
+                 "данные не попали в поиск.")
+        st.session_state["conversion"] = (result, None, [])
+        return
+    if not is_md:
+        target.write_text(result.markdown, encoding="utf-8")
+
+    steps: list[str] = [f"md сохранён: {target.relative_to(ROOT)}"]
+    relative = file_key(target.relative_to(DATA).as_posix())
+    if project == NEW_PROJECT:
+        run_command(["bzpo.registry", "draft", f"data/{relative}"], "Черновик строки реестра")
+        steps.append("черновик строки реестра создан — проверьте его в Excel (вкладка "
+                     "«Документы» → «Открыть реестр»); в поиск документ попадёт после отметки "
+                     "«проверено» и индексации")
+    else:
+        meta, _ = _split_frontmatter(result.markdown)
+        try:
+            add_document(REGISTRY, projects[project], DocumentRow(
+                file=relative,
+                source_file=None if is_md else file_key(source.relative_to(DATA).as_posix()),
+                doc_type=doc_type, title=str(meta.get("doc_title") or target.stem),
+                doc_date=None, slides=meta.get("slides_total"),
+            ))
+            steps.append(f"документ добавлен к проекту {projects[project]}")
+            if index_now:
+                run_command(["bzpo.ingest"], "Индексация")
+                steps.append("индексация запущена — результат выше")
+        except RegistryError as exc:
+            steps.append(f"в реестр не добавлен: {exc}")
+    st.session_state["conversion"] = (result, str(target), steps)
+
+
+def _show_conversion(result: Any, target: str | None, steps: list[str]) -> None:
+    st.markdown(f"**Определён как:** {result.detection.format} ({result.detection.reason}). "
+                f"**Разбор:** {result.detection.method}. {result.notes}")
+    for step in steps:
+        st.markdown(f"- {step}")
     if result.vlm_issues:
         with st.expander(f"Замечания к ответам модели: {len(result.vlm_issues)}"):
             st.markdown("\n".join(f"- {issue}" for issue in result.vlm_issues))
     if result.check is not None:
-        show_check(result.check, result.markdown, result.needs_vlm)
-    markdown = result.markdown
-    if target:
-        target_path = Path(target)
-        st.download_button("Скачать md", markdown.encode("utf-8"), file_name=target_path.name,
+        show_check(result.check, result.markdown or "", result.needs_vlm)
+    if result.markdown:
+        st.download_button("Скачать md", result.markdown.encode("utf-8"),
+                           file_name=Path(target).name if target else "document.md",
                            key="download_converted")
-        existing = _md_for(source)
-        if existing:
-            st.caption(f"В data/samples уже есть {existing.name}: чтобы не было двух версий "
-                       "одного документа в индексе, сначала удалите или замените её вручную.")
-        elif st.button("Принять в data/samples", disabled=not result.ok):
-            accepted = SAMPLES / target_path.name
-            accepted.write_text(markdown, encoding="utf-8")
-            st.success(f"Сохранён {accepted.relative_to(ROOT)}. Дальше — вкладка «Документы»: "
-                       "черновик в реестр и индексация.")
-    with st.expander("Весь md"):
-        st.code(markdown[:20000], language="markdown")
+        with st.expander("Весь md"):
+            st.code(result.markdown[:20000], language="markdown")
 
 
 def tab_drafts() -> None:

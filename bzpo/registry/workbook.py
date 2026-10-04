@@ -133,25 +133,54 @@ def append_draft(
         put(duration, f'=IF(AND(ISNUMBER({s}{row}),ISNUMBER({e}{row})),'
                       f'ROUND(({e}{row}-{s}{row})/7,0),"")', None, None)
 
-    doc_row = documents.max_row + 1
+    _write_document(documents, document_cols, code, document,
+                    f"Добавлен черновиком {date.today():%d.%m.%Y}")
+    workbook.calculation.fullCalcOnLoad = True
+    workbook.save(path)
+    return row, code
+
+
+def add_document(path: Path, code: str, document: DocumentRow) -> None:
+    """Добавить документ к существующему проекту (строка листа «Документы»).
+
+    Проект уже проверен человеком, поэтому строка проекта не трогается: новый
+    документ (КП, акт, ещё один отчёт) попадает в индекс при следующем прогоне.
+    """
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path)
+    projects = _sheet(workbook, PROJECTS)
+    documents = _sheet(workbook, DOCUMENTS)
+    project_cols, document_cols = _columns(projects), _columns(documents)
+    codes = {projects.cell(r, project_cols["Код проекта"]).value
+             for r in range(2, projects.max_row + 1)}
+    if code not in codes:
+        raise RegistryError(f"проекта {code} нет в реестре")
+    _ensure_new(documents, document_cols, document.file)
+    _write_document(documents, document_cols, code, document,
+                    f"Добавлен из интерфейса {date.today():%d.%m.%Y}")
+    workbook.save(path)
+
+
+def _write_document(documents: Any, columns: dict[str, int], code: str,
+                    document: DocumentRow, comment: str) -> None:
+    from openpyxl.styles import Alignment, Font
+
+    row = documents.max_row + 1
     values = {
         "Код проекта": code, "Файл": file_key(document.file),
         "Исходный файл": file_key(document.source_file) if document.source_file else None,
         "Тип документа": document.doc_type, "Название": document.title,
         "Дата документа": document.doc_date, "Слайдов": document.slides,
-        "Комментарии": f"Добавлен черновиком {date.today():%d.%m.%Y}",
+        "Комментарии": comment,
     }
     for name, value in values.items():
-        if name in document_cols:
-            cell = documents.cell(doc_row, document_cols[name], value)
-            cell.font = font
-            cell.alignment = wrap
+        if name in columns:
+            cell = documents.cell(row, columns[name], value)
+            cell.font = Font(name="Arial")
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
             if isinstance(value, date):
                 cell.number_format = "DD.MM.YYYY"
-
-    workbook.calculation.fullCalcOnLoad = True
-    workbook.save(path)
-    return row, code
 
 
 def registered_files(path: Path) -> dict[str, tuple[str | None, str | None]]:
@@ -238,3 +267,14 @@ def _letter(column: int) -> str:
     from openpyxl.utils import get_column_letter
 
     return get_column_letter(column)
+
+
+def is_registry(path: Path) -> bool:
+    """xlsx — реестр БЗПО: есть листы «Проекты» и «Документы»."""
+    from openpyxl import load_workbook
+
+    try:
+        names = load_workbook(path, read_only=True).sheetnames
+    except Exception:  # noqa: BLE001 - любой нечитаемый файл — не реестр
+        return False
+    return PROJECTS in names and DOCUMENTS in names
