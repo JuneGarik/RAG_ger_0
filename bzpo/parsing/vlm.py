@@ -30,6 +30,7 @@ from typing import Any
 from bzpo.parsing.pptx import SlideData
 
 PROMPT_VERSION = "vlm-slide-3"
+VISION_CTX = 8192  # картинка ~1300 токенов + текст слайда до 6000 символов
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 
 PROMPT = """Это слайд консалтингового отчёта. Ниже — текст, уже извлечённый из файла
@@ -75,7 +76,7 @@ def analyze(
     else:
         prompt = PROMPT.format(text=text[:6000])
         result = client.generate(prompt, images=[base64.b64encode(picture).decode()],
-                                 json_format=True, num_predict=900)
+                                 json_format=True, num_predict=900, num_ctx=VISION_CTX)
         raw = result.text
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache.write_text(raw, encoding="utf-8")

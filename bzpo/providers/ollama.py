@@ -105,6 +105,7 @@ class OllamaClient:
         stop: list[str] | None = None,
         system: str | None = None,
         images: list[str] | None = None,
+        num_ctx: int | None = None,
     ) -> Generation:
         """Один синхронный вызов генерации.
 
@@ -122,6 +123,10 @@ class OllamaClient:
         if images:
             # Картинки в base64 — для мультимодальной модели (роль vision).
             payload["images"] = images
+        if num_ctx is not None:
+            # Окно на вызов: разбору слайда хватает 8k, а окно генератора (24k) у модели
+            # с полным вниманием во всех слоях раздувает KV-кэш и замедляет её втрое.
+            payload["options"]["num_ctx"] = num_ctx
         data = self._post(GENERATE_PATH, payload)
         return self._parse(data)
 
