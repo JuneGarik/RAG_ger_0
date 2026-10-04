@@ -67,7 +67,10 @@ def analyze(
 ) -> SlideVision:
     """Разобрать один слайд: ответ модели из кэша или новый, затем проверка."""
     picture = image.read_bytes()
-    text = "\n\n".join([slide.title, *slide.blocks])
+    # Раздел и подраздел тоже на картинке (колонтитул): без них модель считает
+    # колонтитул «текстом, которого нет в извлечённом».
+    text = "\n\n".join(filter(None, [slide.section, slide.subsection, slide.title,
+                                     *slide.blocks]))
     key = hashlib.sha256(picture + PROMPT_VERSION.encode() + model.encode()).hexdigest()[:24]
     cache = cache_dir / f"{key}.json"
     cached = cache.exists()
