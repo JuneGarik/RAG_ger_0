@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import time
@@ -28,6 +29,8 @@ from bzpo.generation.approach import (
 )
 from bzpo.generation.run import MODES as MODES_PARAMS
 from bzpo.generation.run import generate_approach, save_draft, search_facets
+from bzpo.parsing.check import COVERAGE_MIN, DeckCheck, check
+from bzpo.parsing.pptx import extract, to_markdown
 from bzpo.providers.local import LocalEmbedder, LocalReranker
 from bzpo.providers.ollama import OllamaClient
 from bzpo.registry.workbook import file_key, registered_files
@@ -38,6 +41,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
 SAMPLES = DATA / "samples"
 DRAFTS = DATA / "drafts"
+DRAFTS_CONVERTED = DATA / "converted"
 REGISTRY = DATA / "registry.xlsx"
 DOC_TYPES = {"Отчёт": "report", "КП": "kp", "Презентация": "presentation", "Акт": "act"}
 MODES = {"Тщательно (~3 мин)": "thorough", "Быстро (~2 мин)": "quick"}
@@ -400,6 +404,98 @@ def tab_documents() -> None:
         )
 
 
+def _name_key(path: Path) -> str:
+    """Ключ для сопоставления pptx и md: «отчет v1.2» и «отчет_v1_2» — один документ."""
+    return re.sub(r"[\W_]+", "", file_key(path.stem).lower())
+
+
+def _md_for(pptx: Path) -> Path | None:
+    return next((md for md in SAMPLES.glob("*.md") if _name_key(md) == _name_key(pptx)), None)
+
+
+def show_check(result: DeckCheck, markdown: str, needs_vlm: int) -> None:
+    """Отчёт проверки md против pptx: итог, проблемные слайды, их md."""
+    passed = "✅ пройдена" if result.passed else "❌ не пройдена"
+    st.markdown(f"**Проверка {passed}** (полнота ≥ {COVERAGE_MIN:.0%}, ноль чисел без опоры)")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Полнота текста", f"{result.coverage:.1%}")
+    c2.metric("Чисел без опоры в XML", result.unsupported)
+    c3.metric("Нужен разбор изображений", f"{needs_vlm} слайд.",
+               help="Картинки с содержимым, значения цветом, подписи диаграмм think-cell. "
+                    "Логотипы и фоновые рисунки шаблона не считаются.")
+    for problem in result.problems:
+        st.error(problem)
+    problem_slides = [s for s in result.slides if s.unsupported or s.coverage < 0.9]
+    if not problem_slides:
+        return
+    st.caption("Слайды, которые стоит посмотреть: низкая полнота или числа, которых нет в XML "
+               "(у md, сделанного моделью, это могут быть её добавления — ссылки, пересказ).")
+    blocks = dict(re.findall(r"<!-- slide: (\d+) -->(.*?)(?=<!-- slide: \d+ -->|\Z)",
+                             markdown, re.S))
+    for slide in problem_slides[:30]:
+        label = f"Слайд {slide.slide}: полнота {slide.coverage:.0%}"
+        if slide.unsupported:
+            label += f", без опоры: {', '.join(slide.unsupported[:4])}"
+        with st.expander(label):
+            if slide.missing_paragraphs:
+                st.markdown("**Нет в md:**\n" + "\n".join(
+                    f"- {p[:200]}" for p in slide.missing_paragraphs[:8]))
+            st.code(blocks.get(str(slide.slide), "(нет в md)").strip()[:3000], language="markdown")
+
+
+def tab_conversion() -> None:
+    st.header("Конвертация pptx → md")
+    st.caption("Этап П1 плана (docs/PARSING_PLAN.md): текст, таблицы и данные диаграмм берутся "
+               "из файла кодом, без модели. Картинки, значения цветом и подписи диаграмм "
+               "think-cell помечаются — их разберёт мультимодальная модель (этап П2).")
+    decks = sorted(p for p in SAMPLES.glob("*.pptx") if not p.name.startswith("~$"))
+    if not decks:
+        st.info("В data/samples нет pptx. Добавьте файл на вкладке «Документы».")
+        return
+    pptx = st.selectbox("Презентация", decks, format_func=lambda p: p.name)
+    existing = _md_for(pptx)
+    st.caption(f"Готовый md: {existing.name}" if existing else "Готового md для неё нет.")
+
+    col1, col2 = st.columns(2)
+    if col1.button("Конвертировать (код, ~1 с)", type="primary"):
+        deck = extract(pptx)
+        markdown = to_markdown(deck)
+        DRAFTS_CONVERTED.mkdir(parents=True, exist_ok=True)
+        target = DRAFTS_CONVERTED / f"{pptx.stem}.md"
+        target.write_text(markdown, encoding="utf-8")
+        st.session_state["conversion"] = (str(pptx), str(target), check(pptx, markdown),
+                                          sum(s.needs_vlm for s in deck.slides))
+    if existing and col2.button("Проверить готовый md"):
+        markdown = existing.read_text(encoding="utf-8")
+        st.session_state["conversion"] = (str(pptx), str(existing), check(pptx, markdown),
+                                          sum(s.needs_vlm for s in extract(pptx).slides))
+
+    state = st.session_state.get("conversion")
+    if not state or state[0] != str(pptx):
+        return
+    _, md_path, result, needs_vlm = state
+    md_path = Path(md_path)
+    markdown = md_path.read_text(encoding="utf-8")
+    st.subheader(f"Результат: {md_path.relative_to(ROOT)}")
+    if md_path.parent == DRAFTS_CONVERTED:
+        st.info(f"Разбор изображений (этап П2) понадобится на {needs_vlm} слайдах — "
+                "до него содержимое картинок и тепловых карт в поиске не участвует.")
+    show_check(result, markdown, needs_vlm)
+    st.download_button("Скачать md", markdown.encode("utf-8"), file_name=md_path.name,
+                       key="download_converted")
+    if md_path.parent == DRAFTS_CONVERTED:
+        target = SAMPLES / md_path.name
+        if existing:
+            st.caption(f"В data/samples уже есть {existing.name}: чтобы не было двух версий "
+                       "одного документа в индексе, сначала удалите или замените её вручную.")
+        elif st.button("Принять в data/samples", disabled=not result.passed):
+            target.write_text(markdown, encoding="utf-8")
+            st.success(f"Сохранён {target.relative_to(ROOT)}. Дальше — вкладка «Документы»: "
+                       "черновик в реестр и индексация.")
+    with st.expander("Весь md"):
+        st.code(markdown[:20000], language="markdown")
+
+
 def tab_drafts() -> None:
     st.header("Черновики")
     files = sorted(DRAFTS.glob("*.md"), reverse=True) if DRAFTS.exists() else []
@@ -418,13 +514,15 @@ def tab_drafts() -> None:
 
 def main() -> None:
     mode, scope = sidebar()
-    approach, search_tab, documents, drafts = st.tabs(
-        ["🧭 Подход", "🔎 Поиск", "📁 Документы", "📝 Черновики"]
+    approach, search_tab, conversion, documents, drafts = st.tabs(
+        ["🧭 Подход", "🔎 Поиск", "🔄 Конвертация", "📁 Документы", "📝 Черновики"]
     )
     with approach:
         tab_approach(mode, scope)
     with search_tab:
         tab_search(scope)
+    with conversion:
+        tab_conversion()
     with documents:
         tab_documents()
     with drafts:

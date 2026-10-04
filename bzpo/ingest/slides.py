@@ -39,7 +39,7 @@ SLIDE_MARKER = re.compile(r"^<!-- slide: (\d+) -->[ \t]*$", re.M)
 _TITLE = re.compile(r"^## \[Слайд (\d+)\][ \t]*(.*)$", re.M)
 _SECTION_FIELDS = {"Раздел": "section", "Подраздел": "subsection"}
 # Интерпретация конвертера: в поиск — да, в цитируемый текст — нет.
-_DERIVED_FIELDS = ("Тип слайда", "Ключевой посыл", "Визуал")
+_DERIVED_FIELDS = ("Тип слайда", "Ключевой посыл", "Визуал", "Источник значений")
 _FIELD_LINE = re.compile(r"^\*\*([^*\n]+?):\*\*[ \t]*(.*)$")
 _TABLE_ROW = re.compile(r"^\|.*\|[ \t]*$", re.M)
 

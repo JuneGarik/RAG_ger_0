@@ -394,7 +394,9 @@ def _claims(text: str) -> list[tuple[str, bool, str]]:
         cells = [c.strip() for c in line.strip("|").split("|")] if line.startswith("|") else []
         if cells and any(c in ("№", "Этап", "Проект (заказчик)", "Источник") for c in cells):
             continue  # шапка таблицы
-        if len(re.sub(r"[*_|\-#\[\]\d]", " ", line).split()) < 5:
+        if line.rstrip("*_ ").endswith(":"):
+            continue  # подпись поля («**Суть подхода:**»), текст — на следующей строке
+        if len(re.findall(r"[A-Za-zА-Яа-яЁё]{2,}", line)) < 4:
             continue
         claims.append((line, in_basis, section_facet))
     return claims

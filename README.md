@@ -54,6 +54,14 @@ python -m bzpo.generation approach "цель нового проекта" --area
 процитированным номерам. Черновик сохраняется в `data/drafts/`. Около 3 минут
 на ноутбуке: ~30 с поиск, ~2,5 мин генерация.
 
+Конвертация pptx → md без модели (этап П1 `docs/PARSING_PLAN.md`) и проверка
+md против XML pptx:
+
+```bash
+python -m bzpo.parsing convert data/samples/отчёт.pptx      # -> data/converted/отчёт.md
+python -m bzpo.parsing check data/samples/отчёт.pptx data/samples/отчёт.md
+```
+
 Ещё не написаны: разбор запроса и HyDE (этап 3.5), генерация раздела (этап 4:
 сборка контекста, промпт, проверка чисел уже есть в generation/), датасет и
 прогон оценки (этап 3), UI, разбор docx/pdf, секционный индекс, дедупликация.
