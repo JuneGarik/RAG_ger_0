@@ -81,13 +81,13 @@ def search(
         rrf_k=cfg.rrf_k, top_n=candidates or cfg.candidates,
     )
     chunks = repo.fetch_chunks(conn, [c.candidate_id for c in fused])
-    candidates = [c for c in fused if c.candidate_id in chunks]
-    if not candidates:
+    retained = [c for c in fused if c.candidate_id in chunks]
+    if not retained:
         return SearchResult(query, version, [], terms, not_found=True)
 
-    texts = [getattr(chunks[c.candidate_id], cfg.rerank_input) for c in candidates]
+    texts = [getattr(chunks[c.candidate_id], cfg.rerank_input) for c in retained]
     reranked = reranker.rerank(query, texts)
-    rerank_scores = {candidates[i].candidate_id: score for i, score in reranked}
+    rerank_scores = {retained[i].candidate_id: score for i, score in reranked}
     best = max(rerank_scores.values())
     if cfg.rerank_threshold is not None and best < cfg.rerank_threshold:
         return SearchResult(query, version, [], terms, not_found=True)
@@ -107,7 +107,7 @@ def search(
          for b in boosted],
         lambda_=cfg.mmr_lambda, top_k=top_k or cfg.top_k_final,
     )
-    provenance = {c.candidate_id: dict(c.provenance) for c in candidates}
+    provenance = {c.candidate_id: dict(c.provenance) for c in retained}
     hits = [
         SearchHit(s.candidate_id, by_id[s.candidate_id].score, rerank_scores[s.candidate_id],
                   by_id[s.candidate_id].applied, provenance[s.candidate_id],

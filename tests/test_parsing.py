@@ -104,3 +104,49 @@ def test_check_passes_own_output_and_catches_defects(tmp_path: Path) -> None:
 
     one_less = md.split("<!-- slide: 4 -->")[0]
     assert "слайдов в md 3, в pptx 4" in check(pptx, one_less).problems
+
+
+def test_one_off_caption_above_title_kept_with_repeating_colontitul(tmp_path: Path) -> None:
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    layout = prs.slide_layouts[5]
+    for n in range(3):
+        slide = prs.slides.add_slide(layout)
+        slide.shapes.title.text = f"Вывод {n}"
+        slide.shapes.title.top = Inches(1.5)
+        slide.shapes.add_textbox(Inches(0.5), Inches(0.1), Inches(4), Inches(0.3)) \
+            .text_frame.text = "Анализ рынка"  # колонтитул на всех слайдах
+        if n == 1:
+            slide.shapes.add_textbox(Inches(5), Inches(0.2), Inches(3), Inches(0.3)) \
+                .text_frame.text = "Конфиденциально, 18.07.2025"  # разовая надпись
+    path = tmp_path / "labels.pptx"
+    prs.save(str(path))
+    deck = extract(path)
+    assert all(s.subsection == "Анализ рынка" for s in deck.slides)
+    assert "Конфиденциально, 18.07.2025" in deck.slides[1].blocks
+    assert "Анализ рынка" not in deck.slides[1].blocks
+
+
+def test_linked_picture_does_not_crash(tmp_path: Path) -> None:
+    import io
+
+    from PIL import Image
+    from pptx import Presentation
+    from pptx.oxml.ns import qn
+    from pptx.util import Inches
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Скриншот системы"
+    buffer = io.BytesIO()
+    Image.new("RGB", (10, 10)).save(buffer, format="PNG")
+    picture = slide.shapes.add_picture(io.BytesIO(buffer.getvalue()), Inches(1), Inches(2))
+    blip = picture._element.find(".//" + qn("a:blip"))
+    blip.attrib.pop(qn("r:embed"))  # связанная картинка: ссылки на встроенный файл нет
+    blip.set(qn("r:link"), "rIdMissing")
+    path = tmp_path / "linked.pptx"
+    prs.save(str(path))
+    deck = extract(path)
+    assert deck.slides[0].images and deck.slides[0].needs_vlm

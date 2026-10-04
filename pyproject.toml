@@ -31,7 +31,8 @@ registry = ["openpyxl>=3.1"]
 # Веб-интерфейс: ./start.sh
 ui = ["streamlit>=1.40"]
 # Конвертация pptx -> md (bzpo/parsing)
-parsing = ["python-pptx>=1.0", "python-docx>=1.1"]
+# pypdfium2 — PDF -> PNG для этапа П2 (рендер слайдов через LibreOffice)
+parsing = ["python-pptx>=1.0", "python-docx>=1.1", "pypdfium2>=4.30"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",

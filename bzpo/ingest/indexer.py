@@ -45,10 +45,18 @@ class IndexStats:
     seconds: float
 
 
+def chunk_params(settings: Settings) -> dict[str, Any]:
+    """Всё, что влияет на нарезку: и для слайдов, и для документов (docx, md)."""
+    chunking = settings.chunking
+    return {"slides": "one_per_slide", "hard_limit": chunking.chunk_hard_limit_embed,
+            "document_target": chunking.chunk_target, "document_min": chunking.chunk_min}
+
+
 def index_version_name(settings: Settings) -> str:
     local = settings.local
     model = local.embed_model.split("/")[-1]
-    params = f"{PARSER_VERSION}|{settings.chunking.chunk_hard_limit_embed}|{ENRICH_PROMPT_VERSION}"
+    params = "|".join([PARSER_VERSION, ENRICH_PROMPT_VERSION,
+                       *(f"{k}={v}" for k, v in sorted(chunk_params(settings).items()))])
     digest = hashlib.sha256(params.encode()).hexdigest()[:8]
     return f"{model}@{local.embed_model_revision[:8]}-{digest}"
 
@@ -67,7 +75,7 @@ def index_documents(
     repo.ensure_index_version(
         conn, version=version, embedder_model=settings.local.embed_model,
         embedder_revision=settings.local.embed_model_revision, parser_version=PARSER_VERSION,
-        chunk_params={"mode": "slide", "hard_limit": settings.chunking.chunk_hard_limit_embed},
+        chunk_params=chunk_params(settings),
         enrich_prompt_version=ENRICH_PROMPT_VERSION,
     )
     conn.commit()
@@ -80,9 +88,23 @@ def index_documents(
         file_hash = hashlib.sha256(raw).hexdigest()
         # Формат определяется по содержимому: md индексируется как есть, pptx и
         # docx конвертируются на лету тем же конвертером, что и в интерфейсе.
-        conversion = convert(document.file)
+        # Ошибка разбора одного файла не должна останавливать весь прогон.
+        try:
+            conversion = convert(document.file)
+        except Exception as exc:  # noqa: BLE001 - файл помечается, прогон идёт дальше
+            stats.failed[key] = f"конвертация: {type(exc).__name__}: {exc}"
+            logger.exception("конвертация %s не удалась", key)
+            continue
         if conversion.markdown is None:
             stats.failed[key] = conversion.error or "не удалось получить md"
+            continue
+        if conversion.check is not None and not conversion.check.passed:
+            # Проверка против XML не пройдена: числа без опоры или потерян текст —
+            # такой md не должен попадать в поиск и в черновики молча.
+            stats.failed[key] = (
+                f"проверка конвертации не пройдена: полнота {conversion.check.coverage:.1%}, "
+                f"чисел без опоры {conversion.check.unsupported}"
+            )
             continue
         text = conversion.markdown
 

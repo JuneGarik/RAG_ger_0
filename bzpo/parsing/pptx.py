@@ -26,6 +26,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from bzpo.parsing.common import cell_text, clean, rows_to_markdown, yaml_string
+
 CONVERTER_VERSION = "pptx-xml-1"
 UNNAMED_CHART_NOTE = ("*Подписи рядов и категорий заданы на слайде отдельными надписями — "
                       "сопоставление по расположению (этап П2).*")
@@ -119,7 +121,10 @@ def extract(path: Path) -> DeckData:
             section = f"{divider}. {title}"
         subsection = None
         if label and counts[label] >= _LABEL_MIN_REPEATS:
-            shapes = [s for s in shapes if s not in labels]
+            # Убирается только сам колонтитул; другие надписи над заголовком
+            # (гриф, дата, цитата) остаются в тексте слайда.
+            shapes = [s for s in shapes
+                      if not (s in labels and _text_frame(s.text_frame) == label)]
             if section is None or label.lower() not in section.lower():
                 subsection = label
         data = SlideData(number, slide._element.get("show") == "0", title, section, subsection)
@@ -127,7 +132,7 @@ def extract(path: Path) -> DeckData:
         for shape in _ordered(shapes):
             _render_shape(shape, data, seen)
         if slide.has_notes_slide:
-            data.notes = _clean(slide.notes_slide.notes_text_frame.text) or None
+            data.notes = clean(slide.notes_slide.notes_text_frame.text) or None
         data.words = sum(len(b.split()) for b in data.blocks)
         slides.append(data)
 
@@ -142,9 +147,9 @@ def to_markdown(deck: DeckData, *, source_name: str | None = None) -> str:
     notes = any(s.notes for s in deck.slides)
     front = [
         "---",
-        f'doc_title: "{_yaml(deck.title)}"',
+        f'doc_title: "{yaml_string(deck.title)}"',
         'doc_type: "Презентация"',
-        f'source_file: "{_yaml(source_name or deck.source.name)}"',
+        f'source_file: "{yaml_string(source_name or deck.source.name)}"',
         "source_format: pptx",
         f"converter_version: {CONVERTER_VERSION}",
         f"converted_at: {date.today().isoformat()}",
@@ -207,11 +212,11 @@ def _render_shape(shape: Any, data: SlideData, seen: set[str]) -> None:
         data.charts += 1
         data.blocks.append(_chart(shape.chart))
         return
-    if hasattr(shape, "image"):
+    if _is_picture(shape):
         alt = (shape._element.xpath(".//p:cNvPr/@descr") or [""])[0].strip()
         label = alt or shape.name or "без подписи"
         data.images.append(label)
-        data.blocks.append(f"*[Изображение: {_clean(label.replace(chr(10), ' '))} — "
+        data.blocks.append(f"*[Изображение: {clean(label.replace(chr(10), ' '))} — "
                            "содержимое не распознано]*")
         return
     if _has_text(shape):
@@ -248,7 +253,7 @@ def _text_frame(frame: Any) -> str:
                 parts.append(f"[{piece}]({address})" if address and piece.strip() else piece)
             elif child.tag == br_tag:
                 parts.append(" ")
-        text = _clean("".join(parts))
+        text = clean("".join(parts))
         if not text:
             continue
         level = paragraph.level
@@ -264,19 +269,26 @@ def _table(table: Any) -> str:
             if cell.is_spanned:
                 cells.append("")
                 continue
-            text = _clean(cell.text).replace("|", "/").replace("\n", " ")
+            text = cell_text(cell.text)
             if not text:
                 color = _fill_color(cell)
                 text = f"■ #{color}" if color else ""
             cells.append(text)
         rows.append(cells)
-    if not rows:
-        return ""
-    width = max(len(r) for r in rows)
-    rows = [r + [""] * (width - len(r)) for r in rows]
-    lines = ["| " + " | ".join(rows[0]) + " |", "|" + "---|" * width]
-    lines += ["| " + " | ".join(r) + " |" for r in rows[1:]]
-    return "\n".join(lines)
+    return rows_to_markdown(rows)
+
+
+def _is_picture(shape: Any) -> bool:
+    """Картинка, в том числе связанная (не встроенная) и в заполнителе-рисунке.
+
+    `shape.image` у связанной картинки бросает ValueError, а не AttributeError,
+    поэтому проверка идёт по типу фигуры и по наличию blip, без чтения image.
+    """
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+        return True
+    return bool(shape._element.xpath("./p:blipFill"))
 
 
 def _fill_color(cell: Any) -> str | None:
@@ -293,14 +305,14 @@ def _fill_color(cell: Any) -> str | None:
 def _chart(chart: Any) -> str:
     title = ""
     if chart.has_title and chart.chart_title.has_text_frame:
-        title = _clean(chart.chart_title.text_frame.text)
+        title = clean(chart.chart_title.text_frame.text)
     categories: list[str] = []
     columns: list[tuple[str, list[Any]]] = []
     for plot in chart.plots:
         if not categories:
-            categories = [_clean(str(c)) for c in plot.categories]
+            categories = [clean(str(c)) for c in plot.categories]
         for series in plot.series:
-            name = _clean(series.name or "") or f"ряд {len(columns) + 1}"
+            name = clean(series.name or "") or f"ряд {len(columns) + 1}"
             columns.append((name, list(series.values)))
     if not columns:
         return ""
@@ -328,11 +340,3 @@ def _number(value: Any) -> str:
         return text.replace(".", ",")
     return str(value)
 
-
-def _clean(text: str) -> str:
-    text = text.replace("\u000b", " ").replace(" ", " ")
-    return re.sub(r"[ \t]+", " ", text).strip()
-
-
-def _yaml(text: str) -> str:
-    return text.replace("\\", "\\\\").replace('"', '\\"')

@@ -21,6 +21,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from bzpo.parsing.common import cell_text, clean, rows_to_markdown, yaml_string
+
 CONVERTER_VERSION = "docx-xml-1"
 
 _HEADING = re.compile(r"^(?:heading|заголовок)\s*(\d)$", re.I)
@@ -83,9 +85,9 @@ def to_markdown(doc: DocumentData, *, source_name: str | None = None) -> str:
     screenshots = sum(f.slide_screenshot for f in doc.figures)
     front = [
         "---",
-        f'doc_title: "{_yaml(doc.title)}"',
+        f'doc_title: "{yaml_string(doc.title)}"',
         'doc_type: "Документ"',
-        f'source_file: "{_yaml(source_name or doc.source.name)}"',
+        f'source_file: "{yaml_string(source_name or doc.source.name)}"',
         "source_format: docx",
         f"converter_version: {CONVERTER_VERSION}",
         f"converted_at: {date.today().isoformat()}",
@@ -108,7 +110,7 @@ def _paragraph(paragraph: Any, data: DocumentData, text_width: int | None) -> No
     style = (paragraph.style.name if paragraph.style is not None else "").strip()
     for drawing in paragraph._p.xpath(".//w:drawing"):
         _figure(drawing, data, text_width)
-    text = _clean(paragraph.text)
+    text = clean(paragraph.text)
     if not text:
         return
     heading = _HEADING.match(style)
@@ -148,12 +150,12 @@ def _figure(drawing: Any, data: DocumentData, text_width: int | None) -> None:
     wide = bool(text_width) and width >= _WIDE_SHARE * text_width
     screenshot = wide and _SCREEN_RATIO[0] <= ratio <= _SCREEN_RATIO[1]
     number = len(data.figures) + 1
-    data.figures.append(Figure(number, _clean(alt), width, height, screenshot))
+    data.figures.append(Figure(number, clean(alt), width, height, screenshot))
     kind = "slide_screenshot" if screenshot else "image"
     hint = "; похоже на скриншот слайда" if screenshot else ""
     data.blocks.append(
         f"<!-- figure: {number}; kind: {kind} -->\n"
-        f"*[Рисунок {number}: {_clean(alt) or 'без подписи'} — содержимое не распознано{hint}]*"
+        f"*[Рисунок {number}: {clean(alt) or 'без подписи'} — содержимое не распознано{hint}]*"
     )
 
 
@@ -168,21 +170,7 @@ def _table(table: Any) -> str:
                 cells.append("")
                 continue
             previous = cell._tc
-            cells.append(_clean(cell.text).replace("|", "/").replace("\n", " "))
+            cells.append(cell_text(cell.text))
         rows.append(cells)
-    if not rows:
-        return ""
-    width = max(len(r) for r in rows)
-    rows = [r + [""] * (width - len(r)) for r in rows]
-    lines = ["| " + " | ".join(rows[0]) + " |", "|" + "---|" * width]
-    lines += ["| " + " | ".join(r) + " |" for r in rows[1:]]
-    return "\n".join(lines)
+    return rows_to_markdown(rows)
 
-
-def _clean(text: str) -> str:
-    text = text.replace(" ", " ").replace("\t", " ")
-    return re.sub(r"[ ]+", " ", text).strip()
-
-
-def _yaml(text: str) -> str:
-    return text.replace("\\", "\\\\").replace('"', '\\"')
