@@ -25,6 +25,9 @@ PROMPT = ("Перепиши ДОСЛОВНО весь текст со слайд
           "Таблицы — в Markdown. Не пересказывай, не исправляй, не добавляй ничего от себя. "
           "Только текст.")
 OCR_CTX = 8192
+OCR_TIMEOUT = 600.0  # с: ответ до 1200 токенов плюс возможная очередь в Ollama
+# Текст слайда умещается в ~800 токенов; лимит выше обрывает зацикленный ответ.
+OCR_MAX_TOKENS = 1200
 _MIN_WORDS = 3
 
 
@@ -36,7 +39,8 @@ def transcribe(image: bytes, client: Any, cache_dir: Path, model: str) -> str:
         raw = cache.read_text(encoding="utf-8")
     else:
         result = client.generate(PROMPT, images=[base64.b64encode(image).decode()],
-                                 num_predict=2000, num_ctx=OCR_CTX)
+                                 num_predict=OCR_MAX_TOKENS, num_ctx=OCR_CTX,
+                                 timeout=OCR_TIMEOUT)
         raw = result.text
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache.write_text(raw, encoding="utf-8")

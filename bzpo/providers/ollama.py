@@ -106,6 +106,7 @@ class OllamaClient:
         system: str | None = None,
         images: list[str] | None = None,
         num_ctx: int | None = None,
+        timeout: float | None = None,
     ) -> Generation:
         """Один синхронный вызов генерации.
 
@@ -127,7 +128,7 @@ class OllamaClient:
             # Окно на вызов: разбору слайда хватает 8k, а окно генератора (24k) у модели
             # с полным вниманием во всех слоях раздувает KV-кэш и замедляет её втрое.
             payload["options"]["num_ctx"] = num_ctx
-        data = self._post(GENERATE_PATH, payload)
+        data = self._post(GENERATE_PATH, payload, read_timeout=timeout)
         return self._parse(data)
 
     def stream(
@@ -253,10 +254,14 @@ class OllamaClient:
 
     # --------------------------------------------------------------- детали
 
-    def _post(self, path: str, payload: dict[str, Any]) -> Any:
+    def _post(self, path: str, payload: dict[str, Any], read_timeout: float | None = None) -> Any:
         url = self._config.base_url.rstrip("/") + path
+        # Разбор картинки идёт дольше генерации ответа на запрос и может стоять в
+        # очереди Ollama за другим запросом — ему нужен свой лимит ожидания.
+        timeout = self._timeout if read_timeout is None else httpx.Timeout(
+            self._config.timeout_connect, read=read_timeout)
         try:
-            response = self._client.post(url, json=payload, timeout=self._timeout)
+            response = self._client.post(url, json=payload, timeout=timeout)
         except httpx.HTTPError as exc:
             raise OllamaUnavailable(
                 f"модель генерации недоступна: {url}, {type(exc).__name__}: {exc}"

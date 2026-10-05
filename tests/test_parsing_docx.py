@@ -161,3 +161,26 @@ def test_docx_ocr_text_replaces_placeholder(tmp_path: Path, monkeypatch: pytest.
     deck = chunk_document(md, words, target=500, minimum=1, hard_limit=8192)
     figure = next(c for c in deck.chunks if "Сводная оценка" in c.text_raw)
     assert "Балл 2,1 из 5" in figure.text_raw  # рисунок и его текст — один чанк
+
+
+def test_one_failing_figure_does_not_stop_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bzpo.parsing import convert as convert_module
+    from bzpo.providers.ollama import OllamaUnavailable
+
+    class Failing(FakeOCR):
+        def generate(self, prompt: str, **kwargs: object) -> object:
+            raise OllamaUnavailable("ReadTimeout: timed out")
+
+        def __enter__(self) -> FakeOCR:
+            return self
+
+        def __exit__(self, *exc: object) -> None: ...
+
+    monkeypatch.setattr("bzpo.providers.ollama.OllamaClient",
+                        lambda config, role: Failing(""))
+    result = convert_module.convert(build_docx(tmp_path), vlm=True, cache_dir=tmp_path / "c")
+    assert result.markdown is not None  # документ сконвертирован
+    assert any("модель не ответила" in issue for issue in result.vlm_issues)
+    assert result.needs_vlm == 1  # рисунок остался на разбор

@@ -167,15 +167,30 @@ def execute(kind: str, action: Any) -> None:
     job = pending(kind)
     if job is None:
         return
+    label = _operation()["label"]
     try:
         action(job)
+    except Exception as exc:  # noqa: BLE001 - пользователю сообщение, а не стектрейс
+        st.session_state["operation_error"] = (label, f"{type(exc).__name__}: {exc}")
     finally:
         finish()
     st.rerun()
 
 
+def show_operation_error() -> None:
+    """Ошибка последней операции — понятным сообщением (SPEC 10а: без стектрейсов)."""
+    error = st.session_state.pop("operation_error", None)
+    if error:
+        label, detail = error
+        st.error(f"«{label}» не завершилась. Частично готовое сохранено в кэше — "
+                 "повторный запуск продолжит с того же места.")
+        with st.expander("Подробности для разработчика"):
+            st.code(detail, language=None)
+
+
 def status_line() -> None:
-    """Рядом с кнопками: какая операция идёт и сколько уже длится."""
+    """Рядом с кнопками: какая операция идёт и сколько уже длится; ошибка прошлой."""
+    show_operation_error()
     op = running()
     if op:
         st.info(f"⏳ Идёт: **{op['label']}** — {time.time() - op['started']:.0f} с. "

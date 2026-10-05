@@ -117,7 +117,7 @@ def _vision_pass(
     from bzpo.config import load_config
     from bzpo.parsing import vlm
     from bzpo.parsing.render import render_pages
-    from bzpo.providers.ollama import OllamaClient
+    from bzpo.providers.ollama import OllamaClient, OllamaError
 
     pages = render_pages(path, cache_dir / "render")
     if len(pages) != len(deck.slides):
@@ -130,8 +130,15 @@ def _vision_pass(
     issues: list[str] = []
     with OllamaClient(settings.ollama, role="vision") as client:
         for done, slide in enumerate(targets, start=1):
-            result = vlm.analyze(slide, pages[slide.number - 1], client, cache_dir / "vlm",
-                                 client.model)
+            try:
+                result = vlm.analyze(slide, pages[slide.number - 1], client,
+                                     cache_dir / "vlm", client.model)
+            except OllamaError as exc:
+                # Сбой на одном слайде не останавливает документ: слайд остаётся
+                # «нужен разбор», остальные разбираются.
+                issues.append(f"слайд {slide.number}: модель не ответила ({exc})")
+                progress(done, len(targets), slide.number)
+                continue
             vlm.apply(slide, result)
             slide.vlm_done = True
             issues += [f"слайд {slide.number}: {issue}" for issue in result.issues]
@@ -144,14 +151,19 @@ def _ocr_pass(document: Any, cache_dir: Path,
     """Распознать текст на скриншотах слайдов и крупных рисунках документа Word."""
     from bzpo.config import load_config
     from bzpo.parsing import ocr
-    from bzpo.providers.ollama import OllamaClient
+    from bzpo.providers.ollama import OllamaClient, OllamaError
 
     targets = [f for f in document.figures if f.worth_reading]
     issues: list[str] = []
     with OllamaClient(load_config().ollama, role="ocr") as client:
         for done, figure in enumerate(targets, start=1):
-            figure.text = ocr.transcribe(figure.image, client, cache_dir / "ocr",
-                                         client.model) or None
+            try:
+                figure.text = ocr.transcribe(figure.image, client, cache_dir / "ocr",
+                                             client.model) or None
+            except OllamaError as exc:
+                issues.append(f"рисунок {figure.number}: модель не ответила ({exc})")
+                progress(done, len(targets), figure.number)
+                continue
             if figure.text is None:
                 issues.append(f"рисунок {figure.number}: текста не найдено")
             progress(done, len(targets), figure.number)
