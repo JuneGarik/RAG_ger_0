@@ -108,7 +108,10 @@ def test_postprocess_flags_and_sources() -> None:
 
     output = render(section)
     assert "### Источники" in output
-    assert "Отчёт ДЕВ — проект «Диагностика», заказчик: ГК ДЕВ: [1] слайд 36; [2] слайд 19" in output
+    assert "**Отчёт ДЕВ** · проект «Диагностика» · заказчик: ГК ДЕВ" in output
+    # Каждый источник — отдельной строкой списка, с заголовком слайда.
+    assert "\n- [1] слайд 36 — Проведено 47 интервью и опрос\n" in output
+    assert "\n- [2] слайд 19 — Отсутствие стратегии ЦТ\n" in output
     assert "### Не подтверждено" in output
 
 

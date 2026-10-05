@@ -10,11 +10,20 @@
 | Эмбеддинги | `ai-sage/Giga-Embeddings-instruct-480M-0826`, 1024 изм., вход до 8192 ток. | в процессе, sentence-transformers на MPS | ~1 ГБ |
 | Реранкинг | `BAAI/bge-reranker-v2-m3` | в процессе, CrossEncoder на MPS | ~1.2 ГБ |
 | LLM на запрос (`query`) | `qwen3.5:9b`, Q4_K_M | Ollama | ~6.6 ГБ + KV-кэш |
-| LLM индексации (`enrichment`) | `GigaChat3.1-10B-A1.8B` (Lightning), GGUF Q4_K_M | Ollama | ~6.5 ГБ + KV-кэш |
+| LLM реестра (`enrichment`) | `GigaChat3.1-10B-A1.8B` (Lightning), GGUF Q4_K_M | Ollama | ~6.5 ГБ + KV-кэш |
+| Картинки и скриншоты (`vision`, `ocr`) | `qwen3-vl:8b-instruct` | Ollama, окно 8192 | ~6 ГБ |
+| Рендер слайдов | LibreOffice 26.8 (`soffice --headless`) | процесс | — |
 | Хранилище | PostgreSQL 18 + pgvector | Postgres.app | ~0.5 ГБ |
 
 В памяти одновременно одна LLM: Ollama выгружает одну и загружает другую
 (~4 с), а индексация и ответы на запросы по времени не пересекаются.
+
+**Модель для картинок — Qwen3-VL 8B instruct**, не «думающая» `qwen3-vl:8b`:
+та игнорирует `think=false` и тратит лимит на рассуждения. Окно — 8192 на вызов
+(при 24576 KV-кэш раздувался до 7,2 ГБ и разбор шёл втрое медленнее). Для
+скриншотов в Word она же в режиме дословной транскрипции: GLM-OCR давала
+смешанные слова и зацикливалась. Модель НЕ определяет значения тепловых карт и
+подписи диаграмм — это делает код по XML (`docs/PARSING_PLAN.md`).
 
 Итого ~9–10 ГБ под систему; остальное — macOS и приложения. Браузер с
 десятком вкладок съедает разницу, при индексации его лучше закрыть.
@@ -77,13 +86,16 @@
 1. **Python-окружение** (нужен Python ≥ 3.13):
    ```bash
    python3 -m venv .venv && source .venv/bin/activate
-   pip install -e ".[dev,db,local]"
+   pip install -e ".[dev,db,local,registry,parsing,ui]"
    ```
 2. **Ollama** — приложение с ollama.com. Затем:
    ```bash
    ollama pull qwen3.5:9b
    ollama pull hf.co/ai-sage/GigaChat3.1-10B-A1.8B-GGUF:Q4_K_M
+   ollama pull qwen3-vl:8b-instruct
    ```
+   Для разбора картинок нужен LibreOffice (libreoffice.org): им слайды
+   рендерятся в картинки.
    Переменные, которые экономят память (задать до запуска Ollama):
    `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_FLASH_ATTENTION=1`,
    `OLLAMA_KV_CACHE_TYPE=q8_0`.

@@ -319,13 +319,16 @@ def postprocess(
 def render(section: Section) -> str:
     by_number = {f.number: f for f in section.fragments}
     lines = [section.text, "", "### Источники"]
+    # Документ — строкой-заголовком, под ним каждая ссылка отдельной строкой с
+    # заголовком слайда: в одну строку через «;» список читался как каша.
     documents: dict[tuple[str, str | None, str | None], list[str]] = {}
     for n in section.cited:
         hit = by_number[n].hit
         key = (hit.chunk.doc_title, hit.chunk.project, hit.customer)
-        documents.setdefault(key, []).append(f"[{n}] {hit.chunk.locator}")
+        heading = _short(hit.chunk.text_raw.split("\n", 1)[0], 100)
+        documents.setdefault(key, []).append(f"- [{n}] {hit.chunk.locator} — {heading}")
     for (title, project, customer), refs in documents.items():
-        lines.append(f"- {title} — проект «{project}», заказчик: {customer}: {'; '.join(refs)}")
+        lines += ["", f"**{title}** · проект «{project}» · заказчик: {customer}", "", *refs]
     if not section.cited:
         lines.append("— (ни одной ссылки на фрагменты)")
     lines += ["", "### Достоверность по граням",
