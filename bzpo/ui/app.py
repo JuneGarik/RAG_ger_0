@@ -714,7 +714,8 @@ def _run_conversion(name: str, data: bytes, project: str, projects: dict[str, st
     bar = st.progress(0.0, text="Разбор файла…")
 
     def on_slide(done: int, total: int, slide: int) -> None:
-        bar.progress(done / total, text=f"Модель разбирает картинки: слайд {slide} "
+        what = "рисунок" if name.lower().endswith(".docx") else "слайд"
+        bar.progress(done / total, text=f"Модель разбирает картинки: {what} {slide} "
                                          f"({done} из {total})")
 
     try:

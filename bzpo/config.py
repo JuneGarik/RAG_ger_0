@@ -230,7 +230,7 @@ class LocalModelsConfig(_Section):
     query_cache_size: Annotated[int, Field(ge=0)] = 4096
 
 
-OllamaRole = Literal["query", "enrichment", "vision"]
+OllamaRole = Literal["query", "enrichment", "vision", "ocr"]
 
 
 class OllamaConfig(_Section):
@@ -256,6 +256,9 @@ class OllamaConfig(_Section):
     # Версия instruct: «думающая» qwen3-vl:8b игнорирует think=false и тратит
     # весь лимит на рассуждения.
     model_vision: str = "qwen3-vl:8b-instruct"
+    # ocr — текст со скриншотов слайдов в Word (parsing/ocr.py): дословно, без пересказа.
+    # Qwen3-VL с промптом транскрипции точнее GLM-OCR на русском (см. parsing/ocr.py).
+    model_ocr: str = "qwen3-vl:8b-instruct"
     # Qwen3.5 по умолчанию «думает»: скрытые рассуждения съедают num_predict и
     # бюджет латентности. Модели без режима рассуждений значение игнорируют.
     think: bool = False
@@ -272,7 +275,7 @@ class OllamaConfig(_Section):
 
     def model_for(self, role: OllamaRole) -> str:
         return {"query": self.model_query, "enrichment": self.model_enrichment,
-                "vision": self.model_vision}[role]
+                "vision": self.model_vision, "ocr": self.model_ocr}[role]
 
 
 class DatabaseConfig(_Section):

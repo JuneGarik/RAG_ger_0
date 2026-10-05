@@ -73,7 +73,7 @@ def test_docx_to_markdown(tmp_path: Path) -> None:
     assert "<!-- figure: 1; kind: slide_screenshot -->" in md
     assert "<!-- figure: 2; kind: image -->" in md
     assert "*Подпись:* Рисунок 1. Сводная оценка зрелости" in md
-    assert result.needs_vlm == 2
+    assert result.needs_vlm == 1  # маленький квадратный рисунок (логотип) не распознаётся
     assert "slide_screenshots: 1" in md
 
 
@@ -110,3 +110,54 @@ def test_document_target_splits_long_section() -> None:
     deck = chunk_document(md, words, target=100, minimum=10, hard_limit=8192)
     assert len(deck.chunks) == 3  # по 2 абзаца (~84 слова) на чанк
     assert all(c.section == "Раздел" for c in deck.chunks)
+
+
+class FakeOCR:
+    model = "fake-ocr"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.calls = 0
+
+    def generate(self, prompt: str, **kwargs: object) -> object:
+        self.calls += 1
+        assert kwargs["images"]
+
+        class Result:
+            text = self.text
+
+        return Result()
+
+
+def test_ocr_cleans_duplicates_and_noise(tmp_path: Path) -> None:
+    from bzpo.parsing import ocr
+
+    raw = ("Сводная оценка зрелости\n\nБалл 2,1 из 5\n\n```markdown\n"
+           "Сводная оценка зрелости\n\nБалл 2,1 из 5\n```")
+    client = FakeOCR(raw)
+    assert ocr.transcribe(b"png", client, tmp_path, "m") == "Сводная оценка зрелости\nБалл 2,1 из 5"
+    looping = "\n".join(["ОЦЕНКА ЗРЕЛОСТИ", "ПАО «Компания»"] * 8)  # зацикливание модели
+    assert ocr.clean(looping) == "ОЦЕНКА ЗРЕЛОСТИ\nПАО «Компания»"
+    assert ocr.transcribe(b"png", client, tmp_path, "m") and client.calls == 1  # из кэша
+    assert ocr.transcribe(b"logo", FakeOCR("COMPANY"), tmp_path, "m") == ""  # шум
+
+
+def test_docx_ocr_text_replaces_placeholder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bzpo.parsing import convert as convert_module
+
+    class Client(FakeOCR):
+        def __enter__(self) -> FakeOCR:
+            return self
+
+        def __exit__(self, *exc: object) -> None: ...
+
+    monkeypatch.setattr("bzpo.providers.ollama.OllamaClient",
+                        lambda config, role: Client("Сводная оценка\n\nБалл 2,1 из 5"))
+    result = convert_module.convert(build_docx(tmp_path), vlm=True, cache_dir=tmp_path / "c")
+    md = result.markdown
+    assert "**Рисунок 1 (скриншот слайда; текст распознан OCR — проверить):**" in md
+    assert "Сводная оценка\nБалл 2,1 из 5" in md
+    assert result.needs_vlm == 0 and "текст распознан на 1" in result.notes
+    deck = chunk_document(md, words, target=500, minimum=1, hard_limit=8192)
+    figure = next(c for c in deck.chunks if "Сводная оценка" in c.text_raw)
+    assert "Балл 2,1 из 5" in figure.text_raw  # рисунок и его текст — один чанк

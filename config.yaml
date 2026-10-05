@@ -132,6 +132,9 @@ ollama:
   # vision — разбор картинок слайдов при конвертации (П2). Только instruct:
   # «думающая» qwen3-vl:8b игнорирует think: false.
   model_vision: qwen3-vl:8b-instruct
+  # ocr — текст со скриншотов слайдов в Word, дословная транскрипция. Qwen3-VL точнее
+  # GLM-OCR на русском: без смешанных слов и зацикливания (см. bzpo/parsing/ocr.py).
+  model_ocr: qwen3-vl:8b-instruct
   # Qwen3.5 по умолчанию «думает»; рассуждения съедают num_predict.
   think: false
   # Обязательно: дефолт 2048 молча усекает контекст с разделами-образцами.

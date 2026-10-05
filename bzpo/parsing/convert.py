@@ -77,11 +77,17 @@ def convert(
         from bzpo.parsing import docx
 
         document = docx.extract(path)
+        issues = []
+        if vlm:
+            issues = _ocr_pass(document, cache_dir, progress)
         screenshots = sum(f.slide_screenshot for f in document.figures)
+        read = sum(1 for f in document.figures if f.text)
         return Conversion(path, detection, docx.to_markdown(document),
                           needs_vlm=document.needs_vlm,
                           notes=f"{document.headings} заголовков, {len(document.figures)} "
-                                f"рисунков, из них похожих на скриншоты слайдов: {screenshots}")
+                                f"рисунков, из них похожих на скриншоты слайдов: {screenshots}; "
+                                f"текст распознан на {read}",
+                          vlm_issues=issues)
 
     markdown = path.read_text(encoding="utf-8")
     if detection.format == "md_slides":
@@ -131,3 +137,22 @@ def _vision_pass(
             issues += [f"слайд {slide.number}: {issue}" for issue in result.issues]
             progress(done, len(targets), slide.number)
     return len(targets), issues
+
+
+def _ocr_pass(document: Any, cache_dir: Path,
+              progress: Callable[[int, int, int], None]) -> list[str]:
+    """Распознать текст на скриншотах слайдов и крупных рисунках документа Word."""
+    from bzpo.config import load_config
+    from bzpo.parsing import ocr
+    from bzpo.providers.ollama import OllamaClient
+
+    targets = [f for f in document.figures if f.worth_reading]
+    issues: list[str] = []
+    with OllamaClient(load_config().ollama, role="ocr") as client:
+        for done, figure in enumerate(targets, start=1):
+            figure.text = ocr.transcribe(figure.image, client, cache_dir / "ocr",
+                                         client.model) or None
+            if figure.text is None:
+                issues.append(f"рисунок {figure.number}: текста не найдено")
+            progress(done, len(targets), figure.number)
+    return issues

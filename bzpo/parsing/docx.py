@@ -39,19 +39,41 @@ class Figure:
     width: int
     height: int
     slide_screenshot: bool
+    wide: bool = False
+    image: bytes | None = None  # PNG/JPEG из файла; None — фигура Word без картинки
+    text: str | None = None  # распознанный текст (parsing/ocr.py)
+
+    @property
+    def worth_reading(self) -> bool:
+        """Распознавать: скриншоты слайдов и крупные рисунки; логотипы и иконки — нет."""
+        return self.image is not None and (self.slide_screenshot or self.wide)
+
+    def markdown(self) -> str:
+        kind = "slide_screenshot" if self.slide_screenshot else "image"
+        what = "скриншот слайда" if self.slide_screenshot else "рисунок"
+        if self.text:
+            # Без пустых строк: блок рисунка для чанкера неделим.
+            return (f"<!-- figure: {self.number}; kind: {kind} -->\n"
+                    f"**Рисунок {self.number} ({what}; текст распознан OCR — проверить):**\n"
+                    f"{self.text}")
+        hint = "; похоже на скриншот слайда" if self.slide_screenshot else ""
+        return (f"<!-- figure: {self.number}; kind: {kind} -->\n"
+                f"*[Рисунок {self.number}: {self.alt or 'без подписи'} — содержимое не "
+                f"распознано{hint}]*")
 
 
 @dataclass(slots=True)
 class DocumentData:
     source: Path
     title: str
-    blocks: list[str] = field(default_factory=list)
+    blocks: list[str | Figure] = field(default_factory=list)
     figures: list[Figure] = field(default_factory=list)
     headings: int = 0
 
     @property
     def needs_vlm(self) -> int:
-        return len(self.figures)
+        """Рисунки, текст которых в md пока не попал."""
+        return sum(1 for f in self.figures if f.worth_reading and not f.text)
 
 
 def extract(path: Path) -> DocumentData:
@@ -69,14 +91,15 @@ def extract(path: Path) -> DocumentData:
     tables = {t._tbl: t for t in document.tables}
     for element in document.element.body.iterchildren():
         if element.tag == qn("w:p") and element in paragraphs:
-            _paragraph(paragraphs[element], data, text_width)
+            _paragraph(paragraphs[element], data, text_width, document.part)
         elif element.tag == qn("w:tbl") and element in tables:
             data.blocks.append(_table(tables[element]))
 
     core = (document.core_properties.title or "").strip()
     if not data.title:
         data.title = core or next(
-            (b.lstrip("# ") for b in data.blocks if b.startswith("#")), path.stem
+            (b.lstrip("# ") for b in data.blocks if isinstance(b, str) and b.startswith("#")),
+            path.stem,
         )
     return data
 
@@ -99,17 +122,18 @@ def to_markdown(doc: DocumentData, *, source_name: str | None = None) -> str:
         f"# {doc.title}",
         "",
     ]
-    body = [block for b in doc.blocks if b for block in (b, "")]
+    rendered = [b.markdown() if isinstance(b, Figure) else b for b in doc.blocks]
+    body = [block for b in rendered if b for block in (b, "")]
     return "\n".join(front + body)
 
 
 # --------------------------------------------------------------- элементы
 
 
-def _paragraph(paragraph: Any, data: DocumentData, text_width: int | None) -> None:
+def _paragraph(paragraph: Any, data: DocumentData, text_width: int | None, part: Any) -> None:
     style = (paragraph.style.name if paragraph.style is not None else "").strip()
     for drawing in paragraph._p.xpath(".//w:drawing"):
-        _figure(drawing, data, text_width)
+        _figure(drawing, data, text_width, part)
     text = clean(paragraph.text)
     if not text:
         return
@@ -141,7 +165,7 @@ def _list_level(paragraph: Any) -> int | None:
     return 0 if "list" in style or "списо" in style else None
 
 
-def _figure(drawing: Any, data: DocumentData, text_width: int | None) -> None:
+def _figure(drawing: Any, data: DocumentData, text_width: int | None, part: Any) -> None:
     extent = drawing.xpath(".//wp:extent")
     width = int(extent[0].get("cx", 0)) if extent else 0
     height = int(extent[0].get("cy", 0)) if extent else 0
@@ -150,13 +174,13 @@ def _figure(drawing: Any, data: DocumentData, text_width: int | None) -> None:
     wide = bool(text_width) and width >= _WIDE_SHARE * text_width
     screenshot = wide and _SCREEN_RATIO[0] <= ratio <= _SCREEN_RATIO[1]
     number = len(data.figures) + 1
-    data.figures.append(Figure(number, clean(alt), width, height, screenshot))
-    kind = "slide_screenshot" if screenshot else "image"
-    hint = "; похоже на скриншот слайда" if screenshot else ""
-    data.blocks.append(
-        f"<!-- figure: {number}; kind: {kind} -->\n"
-        f"*[Рисунок {number}: {clean(alt) or 'без подписи'} — содержимое не распознано{hint}]*"
-    )
+    rid = (drawing.xpath(".//a:blip/@r:embed") or [None])[0]
+    related = part.related_parts.get(rid) if rid else None
+    image = related.blob if related is not None and str(
+        getattr(related, "content_type", "")).startswith(("image/png", "image/jpeg")) else None
+    figure = Figure(number, clean(alt), width, height, screenshot, wide, image)
+    data.figures.append(figure)
+    data.blocks.append(figure)
 
 
 def _table(table: Any) -> str:
