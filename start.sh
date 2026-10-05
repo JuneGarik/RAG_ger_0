@@ -34,5 +34,9 @@ for _ in {1..30}; do
 done
 
 echo "Открываю http://localhost:8501 (остановить — Ctrl+C)"
+# Слежение за файлами выключено: перебирая модули, Streamlit дёргает ленивые
+# импорты transformers и сыплет ошибками про torchvision, который не нужен.
+# После правки кода страницу перезапускают (Ctrl+C, ./start.sh).
 exec $PY -m streamlit run bzpo/ui/app.py \
-  --server.port 8501 --browser.gatherUsageStats false --server.headless false
+  --server.port 8501 --browser.gatherUsageStats false --server.headless false \
+  --server.fileWatcherType none
