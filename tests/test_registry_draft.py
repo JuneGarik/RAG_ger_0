@@ -10,7 +10,9 @@ import pytest
 
 from bzpo.ingest.slides import chunk_slides
 from bzpo.registry.draft import (
+    FIELDS,
     DraftContext,
+    DraftField,
     apply_team_table,
     parse,
     select_context,
@@ -276,3 +278,16 @@ def test_doc_type_from_text_overrides_model() -> None:
     fields = verify(parse(answer(**{"Тип документа": ("report", [1])})), context)
     assert fields["Тип документа"].value == "kp"
     assert any("поставлено «kp»" in p for p in fields["Тип документа"].problems)
+
+
+def test_names_found_in_neighbouring_fragment() -> None:
+    # Таблица специалистов разрезана на фрагменты 3 и 4; модель сослалась на 3.
+    context = DraftContext(
+        text="", slides={3: "ФИО | Должность\nПетров Пётр | Партнёр",
+                         4: "Сидоров Иван Сергеевич | Руководитель проекта"},
+        titles={3: "Специалисты", 4: "Специалисты"})
+    fields = {name: DraftField(name, None, []) for name in FIELDS}
+    fields["Менеджер проекта"] = DraftField("Менеджер проекта", "Сидоров Иван Сергеевич", [3])
+    result = verify(fields, context)
+    assert result["Менеджер проекта"].problems == []
+    assert result["Менеджер проекта"].slides == [3, 4]

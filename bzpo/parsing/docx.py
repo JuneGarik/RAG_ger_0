@@ -21,7 +21,13 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from bzpo.parsing.common import cell_text, clean, rows_to_markdown, yaml_string
+from bzpo.parsing.common import (
+    cell_text,
+    clean,
+    is_generic_title,
+    rows_to_markdown,
+    yaml_string,
+)
 
 CONVERTER_VERSION = "docx-xml-1"
 
@@ -96,11 +102,9 @@ def extract(path: Path) -> DocumentData:
             data.blocks.append(_table(tables[element]))
 
     core = (document.core_properties.title or "").strip()
-    if not data.title:
-        data.title = core or next(
-            (b.lstrip("# ") for b in data.blocks if isinstance(b, str) and b.startswith("#")),
-            path.stem,
-        )
+    if is_generic_title(data.title):
+        headings = (b.lstrip("# ") for b in data.blocks if isinstance(b, str) and b.startswith("#"))
+        data.title = next((t for t in [core, *headings] if not is_generic_title(t)), path.stem)
     return data
 
 

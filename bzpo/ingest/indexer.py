@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from bzpo.config import Settings
+from bzpo.ingest.changes import registry_fingerprint
 from bzpo.ingest.document import chunk_document
 from bzpo.ingest.slides import chunk_slides, is_slide_markdown
 from bzpo.parsing.convert import convert
@@ -108,17 +109,21 @@ def index_documents(
             continue
         text = conversion.markdown
 
-        doc_id, previous_hash = repo.upsert_document(
+        project = projects[document.project_code]
+        fingerprint = registry_fingerprint(project, document)
+        doc_id, (previous_hash, previous_registry) = repo.upsert_document(
             conn, project_code=document.project_code, file_key=key, title=document.title,
             doc_type=document.doc_type, doc_date=document.doc_date, file_hash=file_hash,
             page_count=None, parser_version=PARSER_VERSION,
         )
         conn.commit()
-        if previous_hash == file_hash and repo.document_indexed(conn, doc_id, version):
+        # Пропуск — только если не изменились ни md, ни строки реестра: заказчик и
+        # название реестра входят в шапки фрагментов.
+        if (previous_hash == file_hash and previous_registry == fingerprint
+                and repo.document_indexed(conn, doc_id, version)):
             stats.skipped.append(key)
             continue
 
-        project = projects[document.project_code]
         label = project.anon_label if project.publicity == "anon" else project.client
         try:
             if is_slide_markdown(text):
@@ -147,7 +152,7 @@ def index_documents(
                 conn, doc_id=doc_id, project_code=document.project_code, version=version,
                 chunks=rows,
             )
-            repo.set_document_status(conn, doc_id, "indexed")
+            repo.mark_indexed(conn, doc_id, file_hash, fingerprint)
             conn.commit()
         except Exception as exc:  # noqa: BLE001 - документ помечается, прогон идёт дальше
             conn.rollback()

@@ -29,3 +29,13 @@ def clean(text: str) -> str:
 
 def yaml_string(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+# Заголовки служебных разделов: как название документа они бесполезны в «Источниках».
+_GENERIC_TITLE = re.compile(
+    r"^(сведения об отч[её]те|сведения об исполнителе|содержание|оглавление|аннотация|"
+    r"титульный лист|введение|общие сведения)\W*$", re.I)
+
+
+def is_generic_title(title: str | None) -> bool:
+    return not title or bool(_GENERIC_TITLE.match(title.strip()))

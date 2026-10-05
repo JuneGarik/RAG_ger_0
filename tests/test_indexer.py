@@ -57,7 +57,8 @@ def fake_repo(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     calls: dict[str, Any] = {"indexed": [], "activated": None}
     monkeypatch.setattr(indexer.repo, "ensure_index_version", lambda conn, **kw: None)
     monkeypatch.setattr(indexer.repo, "upsert_document",
-                        lambda conn, **kw: (kw["file_key"], None))
+                        lambda conn, **kw: (kw["file_key"], (None, None)))
+    monkeypatch.setattr(indexer.repo, "mark_indexed", lambda conn, *a: None)
     monkeypatch.setattr(indexer.repo, "document_indexed", lambda conn, doc_id, v: False)
     monkeypatch.setattr(indexer.repo, "replace_chunks",
                         lambda conn, **kw: calls["indexed"].append(kw["doc_id"]))

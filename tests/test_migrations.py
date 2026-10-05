@@ -94,7 +94,7 @@ def test_no_ann_index_is_created(sql: str) -> None:
 
 def test_discover_reads_and_orders_migrations() -> None:
     migrations = discover_migrations(MIGRATIONS_DIR)
-    assert [migration.number for migration in migrations] == [1]
+    assert [migration.number for migration in migrations] == [1, 2]
     assert str(migrations[0]) == "0001_initial"
     assert len(migrations[0].checksum) == 64
 

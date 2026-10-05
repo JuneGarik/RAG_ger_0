@@ -48,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
               f"{'; '.join(item['problems'])}")
 
     root = args.data_root.resolve()
+    registered = [file_key(d.file.resolve().relative_to(root).as_posix())
+                  for d in report.documents]
     if args.file:
         # Реестр (проекты, публичность) загружается целиком, индексируются выбранные.
         wanted = {file_key(f) for f in args.file}
@@ -67,11 +69,18 @@ def main(argv: list[str] | None = None) -> int:
             conn, settings, report, embedder, embedder.count_tokens,
             data_root_key=lambda path: file_key(path.resolve().relative_to(root).as_posix()),
         )
+        # Полный прогон приводит поиск в соответствие с реестром: документ, убранный
+        # из реестра (или вернувшийся в черновик), из поиска исчезает. Выборочный
+        # прогон (--file) других документов не трогает.
+        removed = [] if args.file else repo.remove_documents_except(conn, registered)
+        conn.commit()
 
     print(f"\nверсия индекса: {stats.version}")
     print(f"проиндексировано: {len(stats.indexed)} ({stats.chunks} чанков), "
           f"без изменений: {len(stats.skipped)}, ошибок: {len(stats.failed)}, "
           f"{stats.seconds:.0f} с")
+    for key in removed:
+        print(f"  − {key}: нет в реестре — убран из поиска")
     for key, error in stats.failed.items():
         print(f"  ✗ {key}: {error}")
     if stats.failed:

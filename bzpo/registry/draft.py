@@ -110,11 +110,16 @@ class DraftField:
 def select_context(
     deck: SlideDeck, count_tokens: Callable[[str], int], budget: int = 9000
 ) -> DraftContext:
-    """Паспортные слайды целиком + заголовки всех слайдов, в пределах бюджета."""
+    """Паспортные слайды целиком + заголовки слайдов, в пределах бюджета.
+
+    Сначала паспорт: в длинном Word одни заголовки 279 фрагментов занимали 17 тыс.
+    токенов, паспорт не помещался, и модель возвращала пустую карточку. Заголовки
+    получают остаток бюджета, повторы подряд схлопываются, длинные укорачиваются.
+    """
     chunks = deck.chunks
-    titles = "\n".join(f"{c.slide}. {c.title}" for c in chunks)
     meta = "\n".join(f"{k}: {v}" for k, v in deck.meta.items() if k != "chunking")
-    used = count_tokens(titles) + count_tokens(meta)
+    used = count_tokens(meta)
+    passport_budget = budget * 2 // 3
 
     passport = [c for c in chunks if _PASSPORT.search(f"{c.title} {c.slide_type or ''}")]
     head_tail = chunks[:8] + chunks[-2:]
@@ -123,14 +128,30 @@ def select_context(
         if chunk.slide in picked or _SKIP.search(chunk.title):
             continue
         cost = count_tokens(chunk.text_raw)
-        if used + cost > budget:
+        if used + cost > passport_budget:
             continue
         picked[chunk.slide] = chunk.text_raw
         used += cost
 
+    lines: list[str] = []
+    previous = None
+    for c in chunks:
+        title = c.title if len(c.title) <= 120 else c.title[:117].rstrip() + "…"
+        if title == previous:
+            continue
+        previous = title
+        line = f"{c.slide}. {title}"
+        cost = count_tokens(line) + 1
+        if used + cost > budget:
+            lines.append(f"… ещё {len(chunks) - c.slide + 1} фрагм. не показаны")
+            break
+        lines.append(line)
+        used += cost
+    titles = "\n".join(lines)
+
     body = "\n\n".join(f"=== Слайд {n} ===\n{picked[n]}" for n in sorted(picked))
     text = (
-        f"Метаданные файла:\n{meta}\n\nЗаголовки всех слайдов:\n{titles}\n\n"
+        f"Метаданные файла:\n{meta}\n\nЗаголовки слайдов:\n{titles}\n\n"
         f"Полный текст ключевых слайдов:\n{body}"
     )
     return DraftContext(text=text, slides=picked, titles={c.slide: c.title for c in chunks})
@@ -212,6 +233,15 @@ def verify(fields: dict[str, DraftField], context: DraftContext) -> dict[str, Dr
                 draft.value = guess
         elif kind == "names":
             missing = [n for n in _name_words(value) if not _mentions(cited, n)]
+            # Таблица специалистов в Word режется на соседние фрагменты: модель
+            # ссылается на первый, а фамилия стоит в следующем — это не ошибка.
+            near = sorted({s + d for s in draft.slides for d in (-1, 1)} - set(draft.slides))
+            found = [s for s in near if (src := context.slides.get(s))
+                     and any(_mentions(src, n) for n in missing)]
+            if missing and found:
+                draft.slides = sorted({*draft.slides, *found})
+                cited = "\n".join(src for s in draft.slides if (src := context.source(s)))
+                missing = [n for n in _name_words(value) if not _mentions(cited, n)]
             if missing:
                 draft.problems.append(f"на слайдах {draft.slides} нет: {', '.join(missing)}")
         elif kind == "year":

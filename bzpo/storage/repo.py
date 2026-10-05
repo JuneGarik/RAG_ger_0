@@ -94,10 +94,16 @@ def save_registry(conn: Any, report: Any) -> uuid.UUID:
 def upsert_document(
     conn: Any, *, project_code: str, file_key: str, title: str, doc_type: str,
     doc_date: date | None, file_hash: str, page_count: int | None, parser_version: str,
-) -> tuple[uuid.UUID, str | None]:
-    """Создать или обновить документ; вернуть doc_id и прежний file_hash (None — новый)."""
+) -> tuple[uuid.UUID, tuple[str | None, str | None]]:
+    """Создать или обновить документ; вернуть doc_id и прежние (file_hash, registry_hash).
+
+    Отпечатки при обновлении не перезаписываются — их ставит mark_indexed после
+    успешной индексации; иначе сбой посреди прогона выдал бы старые фрагменты за
+    построенные по новому файлу.
+    """
     doc_id = stable_id("document", file_key)
-    row = conn.execute("SELECT file_hash FROM documents WHERE doc_id = %s", (doc_id,)).fetchone()
+    row = conn.execute("SELECT file_hash, registry_hash FROM documents WHERE doc_id = %s",
+                       (doc_id,)).fetchone()
     conn.execute(
         """
         INSERT INTO documents (doc_id, project_id, title, file_path, file_hash, doc_type,
@@ -105,14 +111,41 @@ def upsert_document(
         VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)
         ON CONFLICT (doc_id) DO UPDATE SET
           project_id = EXCLUDED.project_id, title = EXCLUDED.title,
-          file_hash = EXCLUDED.file_hash, doc_type = EXCLUDED.doc_type,
+          doc_type = EXCLUDED.doc_type,
           doc_date = EXCLUDED.doc_date, page_count = EXCLUDED.page_count,
           parser_version = EXCLUDED.parser_version
         """,
         (doc_id, stable_id("project", project_code), title, file_key, file_hash, doc_type,
          doc_date, page_count, parser_version),
     )
-    return doc_id, (row[0] if row else None)
+    return doc_id, ((row[0], row[1]) if row else (None, None))
+
+
+def mark_indexed(conn: Any, doc_id: uuid.UUID, file_hash: str, registry_hash: str) -> None:
+    conn.execute(
+        "UPDATE documents SET status = 'indexed', last_error = NULL, attempts = attempts + 1, "
+        "parsed_at = now(), file_hash = %s, registry_hash = %s WHERE doc_id = %s",
+        (file_hash, registry_hash, doc_id),
+    )
+
+
+def remove_documents_except(conn: Any, keep: Sequence[str]) -> list[str]:
+    """Убрать из поиска документы, которых больше нет в реестре; вернуть их пути.
+
+    Строка документа остаётся (на неё могут ссылаться загрузки реестра), фрагменты
+    удаляются во всех версиях индекса — поиск идёт только по фрагментам.
+    """
+    rows = conn.execute(
+        "SELECT doc_id, file_path FROM documents d WHERE NOT (file_path = ANY(%s)) "
+        "AND EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = d.doc_id)",
+        (list(keep),),
+    ).fetchall()
+    for doc_id, _ in rows:
+        conn.execute("DELETE FROM chunks WHERE doc_id = %s", (doc_id,))
+        conn.execute("UPDATE documents SET status = 'pending', last_error = %s, "
+                     "file_hash = '', registry_hash = NULL WHERE doc_id = %s",
+                     ("нет в реестре — убран из поиска", doc_id))
+    return [path for _, path in rows]
 
 
 def set_document_status(
@@ -325,10 +358,34 @@ class ChunkHit:
 
     @property
     def locator(self) -> str:
-        """Где в документе: «слайд N» для презентаций, раздел — для документов."""
+        """Где в документе: «слайд N» для презентаций; раздел и рисунок — для документов.
+
+        Заголовки разделов в отчётах Word бывают по 300 символов («Этап 2.
+        Организационное и методическое сопровождение…») — в ссылке остаётся
+        первая фраза. Рисунок называется по номеру: так видно, что факт взят со
+        скриншота слайда, и его легко найти в исходнике.
+        """
         if self.page is not None:
             return f"слайд {self.page}"
-        return f"раздел «{self.section_title}»" if self.section_title else "без раздела"
+        parts = []
+        if self.section_title:
+            parts.append(f"раздел «{_short_heading(self.section_title)}»")
+        figures = _FIGURE.findall(self.text_raw)
+        if figures:
+            label = "рисунок" if len(figures) == 1 else "рисунки"
+            kind = " (скриншот слайда)" if any(k == "slide_screenshot" for _, k in figures) else ""
+            parts.append(f"{label} {', '.join(n for n, _ in figures)}{kind}")
+        return ", ".join(parts) or "без раздела"
+
+
+_FIGURE = re.compile(r"<!-- figure: (\d+); kind: (\w+)")
+
+
+def _short_heading(title: str, limit: int = 60) -> str:
+    first = re.split(r"(?<=\w)\.\s", title, maxsplit=1)[0]
+    if len(first) <= limit:
+        return first
+    return first[: limit - 1].rsplit(" ", 1)[0] + "…"
 
 
 def fetch_chunks(conn: Any, chunk_ids: Sequence[str]) -> dict[str, ChunkHit]:
@@ -368,6 +425,9 @@ class DocumentInfo:
     customer: str | None
     chunks: int
     publicity: str = "open"
+    file_hash: str | None = None
+    registry_hash: str | None = None
+    last_error: str | None = None
 
 
 def list_documents(conn: Any, version: str | None) -> list[DocumentInfo]:
@@ -376,7 +436,7 @@ def list_documents(conn: Any, version: str | None) -> list[DocumentInfo]:
         """
         SELECT d.doc_id, d.title, d.file_path, d.doc_type, d.status, p.name,
                CASE WHEN p.publicity = 'anon' THEN p.anon_label ELSE cl.canonical_name END,
-               count(c.chunk_id), p.publicity
+               count(c.chunk_id), p.publicity, d.file_hash, d.registry_hash, d.last_error
         FROM documents d
         JOIN projects p ON p.project_id = d.project_id
         LEFT JOIN clients cl ON cl.client_id = p.client_id
@@ -386,5 +446,4 @@ def list_documents(conn: Any, version: str | None) -> list[DocumentInfo]:
         """,
         (version,),
     ).fetchall()
-    return [DocumentInfo(str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8])
-            for r in rows]
+    return [DocumentInfo(str(r[0]), *r[1:]) for r in rows]

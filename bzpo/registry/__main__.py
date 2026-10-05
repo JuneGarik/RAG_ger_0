@@ -19,6 +19,7 @@ from pathlib import Path
 from bzpo.config import load_config
 from bzpo.ingest.document import chunk_document
 from bzpo.ingest.slides import chunk_slides, is_slide_markdown
+from bzpo.parsing.common import is_generic_title
 from bzpo.parsing.convert import convert
 from bzpo.providers.ollama import OllamaClient
 from bzpo.registry.draft import (
@@ -92,7 +93,10 @@ def draft(md_path: Path, registry: Path, data_root: Path) -> int:
             if source_path and source_path.exists() else None
         ),
         doc_type=str(doc_type) if doc_type else None,
-        title=str(deck.meta.get("doc_title") or fields["Название"].value or md_path.stem),
+        # «Сведения об Отчете» как название в «Источниках» бесполезно: тогда — название
+        # проекта из черновика.
+        title=str(next((t for t in (deck.meta.get("doc_title"), fields["Название"].value)
+                        if not is_generic_title(t)), md_path.stem)),
         doc_date=date.fromisoformat(str(report_date)) if report_date else None,
         slides=len(deck.chunks),
     )

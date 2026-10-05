@@ -32,6 +32,7 @@ from bzpo.generation.approach import (
 )
 from bzpo.generation.run import MODES as MODES_PARAMS
 from bzpo.generation.run import generate_approach, save_draft, search_facets
+from bzpo.ingest import changes
 from bzpo.ingest.slides import _split_frontmatter
 from bzpo.parsing.check import COVERAGE_MIN, DeckCheck
 from bzpo.parsing.convert import convert
@@ -539,6 +540,25 @@ def review_form(busy: bool) -> None:
         st.rerun()
 
 
+def show_changes(pending: list[changes.Change], busy: bool) -> None:
+    """Что изменилось после индексации — и одна кнопка, которая это обрабатывает."""
+    st.subheader("Изменения")
+    if not pending:
+        st.success("Поиск соответствует реестру и файлам — обрабатывать нечего.")
+        return
+    st.dataframe([{"Файл": Path(c.key).name, "Что произошло": c.message} for c in pending],
+                 width="stretch", hide_index=True)
+    fixable = [c for c in pending if c.kind in changes.FIXED_BY_INDEXING]
+    st.button(
+        f"Обработать изменения ({len(fixable)})", type="primary", disabled=busy or not fixable,
+        on_click=request, args=("sync", "Обработка изменений"),
+        help="Загружает реестр, переиндексирует новые и изменённые документы, убирает из "
+             "поиска исключённые из реестра. Неизменённые документы не пересчитываются.")
+    if len(fixable) < len(pending):
+        st.caption("Документы с новым оригиналом конвертируются заново на вкладке "
+                   "«Конвертация» — после этого они появятся здесь как изменённые.")
+
+
 def tab_documents() -> None:
     st.header("Документы")
     st.caption("Здесь только то, что уже в формате системы: md (сконвертированные документы) "
@@ -570,6 +590,10 @@ def tab_documents() -> None:
             st.success(f"Сохранён {saved.relative_to(ROOT)}")
     registry = registered_files(REGISTRY) if REGISTRY.exists() else {}
     problems = diagnose(REGISTRY, DATA) if REGISTRY.exists() else {}
+    report = load_registry(REGISTRY, DATA) if REGISTRY.exists() else None
+    pending = (changes.detect(report, in_db, DATA, sources=DATA / "sources")
+               if report else [])
+    pending_by_key = {c.key: c for c in pending}
 
     st.subheader("Сохранённые документы")
     rows = []
@@ -581,7 +605,10 @@ def tab_documents() -> None:
         code, status = registry.get(key, (None, None))
         doc = in_db.get(key)
         allowed = settings().search.allowed_publicity
-        if doc and doc.chunks and doc.publicity not in allowed:
+        change = pending_by_key.get(key)
+        if change and change.kind != changes.NEW:
+            state = f"🔄 {change.message}"
+        elif doc and doc.chunks and doc.publicity not in allowed:
             state = (f"🔒 в базе ({doc.chunks} фрагм.), но скрыт: публичность «{doc.publicity}», "
                      f"в поиск допускается {', '.join(allowed)}")
         elif doc and doc.chunks:
@@ -620,10 +647,12 @@ def tab_documents() -> None:
         if st.button("Открыть папку data/samples", disabled=busy):
             subprocess.run(["open", str(SAMPLES)], check=False)
 
+    show_changes(pending, busy)
+
     # Индексация выбранных документов: только проверенные строки реестра.
     ready = []
-    if REGISTRY.exists():
-        for document in load_registry(REGISTRY, DATA).documents:
+    if report:
+        for document in report.documents:
             key = file_key(document.file.resolve().relative_to(DATA.resolve()).as_posix())
             indexed = in_db.get(key)
             ready.append((key, Path(key).name, bool(indexed and indexed.chunks)))
@@ -632,13 +661,13 @@ def tab_documents() -> None:
         st.caption("Нет проверенных документов: сначала проверьте строку реестра ниже.")
     else:
         labels = {name + (" — уже в поиске" if done else ""): key for key, name, done in ready}
+        stale = {c.key for c in pending if c.kind in changes.FIXED_BY_INDEXING}
         chosen = st.multiselect(
             "Документы для индексации", list(labels),
-            default=[label for label, key in labels.items()
-                     if not any(k == key and done for k, _, done in ready)],
+            default=[label for label, key in labels.items() if key in stale],
             disabled=busy, key="index_selection",
-            help="Документ в поиске при повторной индексации пересчитается, только если "
-                 "его файл изменился.")
+            help="По умолчанию отмечены новые и изменённые. Документ без изменений при "
+                 "повторной индексации не пересчитывается.")
         st.button("Проиндексировать выбранные", type="primary", disabled=busy or not chosen,
                   on_click=request, args=("index", "Индексация"),
                   kwargs={"files": [labels[label] for label in chosen]})
@@ -649,6 +678,7 @@ def tab_documents() -> None:
     execute("index", lambda job: run_command(
         [*INGEST, *[arg for f in job.get("files", []) for arg in ("--file", f)]],
         "Загрузка реестра и индексация"))
+    execute("sync", lambda job: run_command(INGEST, "Обработка изменений"))
 
     if REGISTRY.exists():
         review_form(busy)
