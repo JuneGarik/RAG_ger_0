@@ -202,3 +202,38 @@ def to_markdown_one(data: SlideData) -> str:
 
 def test_heatmap_note_constant_present() -> None:
     assert "по цвету заливки и легенде" in HEATMAP_NOTE
+
+
+def test_rating_scales_counted_from_segments(tmp_path: Path) -> None:
+    from pptx import Presentation
+    from pptx.enum.dml import MSO_THEME_COLOR
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Emu, Inches
+
+    from bzpo.parsing.pptx import SCALE_NOTE
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Оценка решений"
+    table_shape = slide.shapes.add_table(2, 2, Inches(0.5), Inches(2), Inches(8), Inches(1))
+    table = table_shape.table
+    table.columns[0].width, table.columns[1].width = Inches(4), Inches(4)
+    table.cell(0, 0).text, table.cell(0, 1).text = "Критерий", "Решение 1"
+    table.cell(1, 0).text = "Функциональность"
+    # 8 сегментов во второй ячейке нижней строки: 3 тёмных, 2 светлых, 3 пустых.
+    colors = [MSO_THEME_COLOR.ACCENT_2] * 3 + [MSO_THEME_COLOR.ACCENT_1] * 2 \
+        + [MSO_THEME_COLOR.BACKGROUND_1] * 3
+    row_top = table_shape.top + table.rows[0].height
+    for i, color in enumerate(colors):
+        segment = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
+                                         Inches(4.6) + Emu(200_000 * i), row_top + Emu(50_000),
+                                         Emu(150_000), Emu(250_000))
+        segment.fill.solid()
+        segment.fill.fore_color.theme_color = color
+        if color == MSO_THEME_COLOR.ACCENT_1:
+            segment.fill.fore_color.brightness = 0.4  # светлее, как на слайде «Ритейла»
+    path = tmp_path / "scale.pptx"
+    prs.save(str(path))
+    md = to_markdown(extract(path))
+    assert SCALE_NOTE in md
+    assert "| Функциональность | 5 из 8 (из них 2 — светлым цветом) |" in md

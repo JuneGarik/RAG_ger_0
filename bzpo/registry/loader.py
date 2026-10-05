@@ -211,3 +211,29 @@ def _date(value: Any) -> date | None:
             except ValueError:
                 continue
     return None
+
+
+def diagnose(path: Path, data_root: Path) -> dict[str, list[str]]:
+    """Что мешает каждому проекту реестра попасть в индекс (включая черновики).
+
+    Для интерфейса: черновик загрузчик просто пропускает, а пользователю
+    нужно видеть список того, что поправить, а не «документ не индексируется».
+    """
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, data_only=True, read_only=True)
+    docs_by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row_no, row in _rows(workbook[DOCUMENTS]):
+        docs_by_code[_text(row.get("Код проекта")) or ""].append({"_row": row_no, **row})
+    result: dict[str, list[str]] = {}
+    for row_no, row in _rows(workbook[PROJECTS]):
+        code = _text(row.get("Код проекта")) or f"строка {row_no}"
+        docs = docs_by_code.get(code, [])
+        problems, _ = _project(row, docs)
+        for doc in docs:
+            doc_problems, _ = _document(doc, code, data_root)
+            problems += [f"документ {doc.get('Файл')}: {p}" for p in doc_problems]
+        if _text(row.get(STATUS_COLUMN)) != STATUS_VERIFIED:
+            problems.append(f"«{STATUS_COLUMN}» — не «{STATUS_VERIFIED}»")
+        result[code] = problems
+    return result

@@ -26,10 +26,12 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from bzpo.parsing import charts, heatmap
+from bzpo.parsing import charts, heatmap, scales
 from bzpo.parsing.common import cell_text, clean, rows_to_markdown, yaml_string
 
 CONVERTER_VERSION = "pptx-xml-1"
+SCALE_NOTE = ("*Оценки по шкалам посчитаны по закрашенным сегментам в ячейках "
+              "(кодом, по XML).*")
 HEATMAP_NOTE = ("*Значения ячеек восстановлены по цвету заливки и легенде слайда "
                 "(кодом, по XML).*")
 LEGEND_CHART_NOTE = ("*Подписи рядов и категорий сопоставлены с легендой слайда по цвету "
@@ -278,7 +280,7 @@ def _render_shape(
 ) -> None:
     if getattr(shape, "has_table", False) and shape.has_table:
         data.tables += 1
-        data.blocks.append(_table(shape.table, legend))
+        data.blocks.append(_table(shape.table, legend, scales.cell_scales(shape, shapes)))
         return
     if getattr(shape, "has_chart", False) and shape.has_chart:
         data.charts += 1
@@ -335,15 +337,17 @@ def _text_frame(frame: Any) -> str:
     return "\n".join(lines)
 
 
-def _table(table: Any, legend: list[heatmap.LegendItem]) -> str:
+def _table(table: Any, legend: list[heatmap.LegendItem],
+           scale_values: dict[tuple[int, int], str] | None = None) -> str:
+    scale_values = scale_values or {}
     rows = []
-    for row in table.rows:
+    for r, row in enumerate(table.rows):
         cells = []
-        for cell in row.cells:
+        for c, cell in enumerate(row.cells):
             if cell.is_spanned:
                 cells.append("")
                 continue
-            text = cell_text(cell.text)
+            text = cell_text(cell.text) or scale_values.get((r, c), "")
             if not text:
                 color = heatmap.shape_fill(cell)
                 text = "" if color is None else (
@@ -355,7 +359,8 @@ def _table(table: Any, legend: list[heatmap.LegendItem]) -> str:
         return HEATMAP_NOTE + "\n" + rows_to_markdown(mapped)
     # Цвет темы без легенды ничего не значит — обычная пустая ячейка.
     rows = [[c if c != f"■ {heatmap.THEME}" else "" for c in row] for row in rows]
-    return rows_to_markdown(rows)
+    note = SCALE_NOTE + "\n" if scale_values else ""
+    return note + rows_to_markdown(rows)
 
 
 def _is_picture(shape: Any) -> bool:

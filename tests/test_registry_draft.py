@@ -246,3 +246,33 @@ def test_nfd_filename_matches_registered_nfc(tmp_path: Path) -> None:
     assert nfc in registered_files(registry)  # хранится в NFC
     with pytest.raises(RegistryError, match="уже в реестре"):
         ensure_not_registered(registry, nfc)
+
+
+def test_parse_tolerates_model_field_names_and_null_strings() -> None:
+    raw = json.dumps({
+        "год": {"value": "2025", "slides": [1]},  # регистр
+        "обобщ.название клиента": {"value": "крупный ритейлер", "slides": []},  # опечатка
+        "Директор": {"value": "null", "slides": [4]},  # «нет данных» строкой
+        "КЛИЕНТ": {"value": "ООО «Ромашка»", "slides": [1]},
+    }, ensure_ascii=False)
+    fields = parse(raw)
+    assert fields["Год"].value == "2025"
+    assert fields["Обзелич.название клиента"].value == "крупный ритейлер"
+    assert fields["Клиент"].value == "ООО «Ромашка»"
+    assert fields["Директор"].value is None
+
+
+def test_doc_type_from_text_overrides_model() -> None:
+    from bzpo.registry.draft import guess_doc_type
+
+    kp = ("Сопроводительное письмо. Мы понимаем, что заказчику нужно выбрать платформу. "
+          "Мы предлагаем этапы работ. Стоимость работ — 3 900 000 руб. Срок выполнения — "
+          "5 недель. По итогам — отчет.")
+    assert guess_doc_type(kp) == "kp"
+    assert guess_doc_type("Отчет. Результаты услуг. Сведения об исполнителе. Отчет.") == "report"
+    assert guess_doc_type("Нейтральный текст без признаков") is None
+
+    context = DraftContext(text="", slides={1: kp}, titles={1: "Предложение"})
+    fields = verify(parse(answer(**{"Тип документа": ("report", [1])})), context)
+    assert fields["Тип документа"].value == "kp"
+    assert any("поставлено «kp»" in p for p in fields["Тип документа"].problems)

@@ -16,6 +16,7 @@ LLM не заполняет то, что решает человек: код п�
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from collections.abc import Callable, Iterable
@@ -159,14 +160,23 @@ def parse(raw: str) -> dict[str, DraftField]:
     if not isinstance(data, dict):
         raise ValueError("ответ модели — не объект JSON")
 
+    # Модель называет поля по-своему: «год» вместо «Год», «обобщ.название клиента»
+    # вместо «Обзелич.название клиента» — сопоставление без регистра и знаков,
+    # для опечаток — ближайшее имя (не ниже 0,8 по difflib).
+    by_key = {_field_key(k): v for k, v in data.items()}
     result: dict[str, DraftField] = {}
     for name in FIELDS:
-        item = data.get(name)
+        key = _field_key(name)
+        if key not in by_key:
+            close = difflib.get_close_matches(key, list(by_key), n=1, cutoff=0.8)
+            key = close[0] if close else key
+        item = by_key.get(key)
         value: str | int | None = None
         slides: list[int] = []
         if isinstance(item, dict):
             raw_value = item.get("value")
-            if isinstance(raw_value, int | str) and str(raw_value).strip():
+            if isinstance(raw_value, int | str) and str(raw_value).strip() \
+                    and str(raw_value).strip().lower() not in _EMPTY_VALUES:
                 value = raw_value.strip() if isinstance(raw_value, str) else raw_value
             raw_slides = item.get("slides") or []
             if isinstance(raw_slides, list):
@@ -192,6 +202,14 @@ def verify(fields: dict[str, DraftField], context: DraftContext) -> dict[str, Dr
         if kind == "enum":
             if value not in DOC_TYPES:
                 draft.problems.append(f"«{value}» не из списка {', '.join(DOC_TYPES)}")
+            guess = guess_doc_type(" ".join(context.slides.values())
+                                   + " " + " ".join(context.titles.values()))
+            if guess and value != guess:
+                # Явный перевес признаков в тексте надёжнее ответа модели: от типа
+                # зависит результат тендера (отчёт -> won), ошибка здесь дорогая.
+                draft.problems.append(f"модель указала «{value}», по признакам в тексте — "
+                                      f"«{guess}»; поставлено «{guess}»")
+                draft.value = guess
         elif kind == "names":
             missing = [n for n in _name_words(value) if not _mentions(cited, n)]
             if missing:
@@ -264,12 +282,44 @@ def _team_rows(text: str) -> list[tuple[str, str]]:
     return rows
 
 
+_KP_SIGNALS = re.compile(
+    r"коммерческ\w* предложени|предлагаем|стоимост\w* (работ|услуг)|сопроводительное письмо|"
+    r"срок\w* (выполнения|оказания)|мы понимаем, что", re.I)
+_REPORT_SIGNALS = re.compile(
+    r"\bотч[её]т\b|результат\w* (услуг|работ)|основание для оказания услуг|"
+    r"сведения об исполнителе", re.I)
+
+
+def guess_doc_type(text: str) -> str | None:
+    """Отчёт или КП по перевесу признаков в тексте; None — признаков мало или они спорят.
+
+    Признаки встречаются в обоих типах (КП обещает «отчёт», отчёт упоминает
+    «стоимость работ»), поэтому решает перевес не меньше чем втрое: на «ОЦО
+    Ритейл» 8 признаков КП против 2, на отчёте ДЕВ 30 признаков отчёта против 3.
+    """
+    kp = len(_KP_SIGNALS.findall(text))
+    report = len(_REPORT_SIGNALS.findall(text))
+    if kp >= 3 and kp >= 3 * report:
+        return "kp"
+    if report >= 3 and report >= 3 * kp:
+        return "report"
+    return None
+
+
 def tender_result_for(doc_types: Iterable[str]) -> str | None:
     """Отчёт или акт — работа выполнена, тендер выигран. Только КП — решает человек."""
     return "won" if {"report", "act"} & set(doc_types) else None
 
 
 # --------------------------------------------------------------- детали
+
+
+# Модель пишет «нет данных» строкой вместо null.
+_EMPTY_VALUES = {"null", "none", "нет", "нет данных", "не указано", "-", "—", "н/д"}
+
+
+def _field_key(name: str) -> str:
+    return re.sub(r"[\W_]+", "", str(name).lower().replace("ё", "е"))
 
 
 def _name_words(value: str) -> list[str]:

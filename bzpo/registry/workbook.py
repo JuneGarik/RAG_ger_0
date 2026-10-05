@@ -278,3 +278,68 @@ def is_registry(path: Path) -> bool:
     except Exception:  # noqa: BLE001 - любой нечитаемый файл — не реестр
         return False
     return PROJECTS in names and DOCUMENTS in names
+
+
+def review_project(
+    path: Path,
+    code: str,
+    *,
+    new_code: str,
+    publicity: str,
+    anon_label: str | None,
+    doc_type: str | None,
+    tender_result: str | None,
+    verified: bool,
+) -> None:
+    """Записать решения человека по строке проекта (форма проверки в интерфейсе).
+
+    Код меняется на обоих листах сразу — иначе документы теряют проект. Жёлтая
+    заливка снимается с исправленных ячеек: их проверил человек.
+    """
+    from openpyxl import load_workbook
+    from openpyxl.styles import PatternFill
+
+    workbook = load_workbook(path)
+    projects, documents = _sheet(workbook, PROJECTS), _sheet(workbook, DOCUMENTS)
+    pcols, dcols = _columns(projects), _columns(documents)
+    row = next((r for r in range(2, projects.max_row + 1)
+                if projects.cell(r, pcols["Код проекта"]).value == code), None)
+    if row is None:
+        raise RegistryError(f"проекта {code} нет в реестре")
+    if new_code != code and any(projects.cell(r, pcols["Код проекта"]).value == new_code
+                                for r in range(2, projects.max_row + 1)):
+        raise RegistryError(f"код {new_code} уже занят другим проектом")
+    no_fill = PatternFill(fill_type=None)
+    values = {
+        "Код проекта": new_code, "Уровень публичности": publicity,
+        "Обзелич.название клиента": anon_label, "Результат тендера": tender_result,
+        STATUS_COLUMN: STATUS_VERIFIED if verified else STATUS_DRAFT,
+    }
+    for name, value in values.items():
+        if name in pcols and (value is not None or name != "Обзелич.название клиента"):
+            cell = projects.cell(row, pcols[name], value)
+            cell.fill = no_fill
+    for r in range(2, documents.max_row + 1):
+        if documents.cell(r, dcols["Код проекта"]).value == code:
+            documents.cell(r, dcols["Код проекта"], new_code)
+            if doc_type and "Тип документа" in dcols:
+                documents.cell(r, dcols["Тип документа"], doc_type)
+    workbook.save(path)
+
+
+def project_row(path: Path, code: str) -> dict[str, Any]:
+    """Значения строки проекта по именам колонок (для формы проверки)."""
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, data_only=True, read_only=True)
+    projects, documents = _sheet(workbook, PROJECTS), _sheet(workbook, DOCUMENTS)
+    header = [str(c.value).strip() if c.value is not None else "" for c in projects[1]]
+    for values in projects.iter_rows(min_row=2, values_only=True):
+        row = dict(zip(header, values, strict=False))
+        if row.get("Код проекта") == code:
+            dheader = [str(c.value).strip() if c.value is not None else "" for c in documents[1]]
+            row["_documents"] = [dict(zip(dheader, v, strict=False))
+                                 for v in documents.iter_rows(min_row=2, values_only=True)
+                                 if v and v[dheader.index("Код проекта")] == code]
+            return row
+    raise RegistryError(f"проекта {code} нет в реестре")
