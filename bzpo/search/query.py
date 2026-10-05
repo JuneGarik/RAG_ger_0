@@ -9,7 +9,7 @@ FTS строится по 8 самым редким в корпусе лемма
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from bzpo.config import Settings
@@ -42,6 +42,9 @@ class SearchResult:
     hits: list[SearchHit]
     terms: list[str]
     not_found: bool
+    # Все кандидаты после реранкера и boost, по убыванию оценки: из них берутся
+    # документы, не попавшие в hits, — «может пригодиться» под черновиком.
+    pool: list[SearchHit] = field(default_factory=list)
 
 
 def search(
@@ -108,10 +111,11 @@ def search(
         lambda_=cfg.mmr_lambda, top_k=top_k or cfg.top_k_final,
     )
     provenance = {c.candidate_id: dict(c.provenance) for c in retained}
-    hits = [
-        SearchHit(s.candidate_id, by_id[s.candidate_id].score, rerank_scores[s.candidate_id],
-                  by_id[s.candidate_id].applied, provenance[s.candidate_id],
-                  chunks[s.candidate_id])
-        for s in selected
-    ]
-    return SearchResult(query, version, hits, terms, not_found=False)
+
+    def hit(cid: str) -> SearchHit:
+        return SearchHit(cid, by_id[cid].score, rerank_scores[cid], by_id[cid].applied,
+                         provenance[cid], chunks[cid])
+
+    hits = [hit(s.candidate_id) for s in selected]
+    pool = [hit(b.candidate_id) for b in sorted(boosted, key=lambda b: -b.score)]
+    return SearchResult(query, version, hits, terms, not_found=False, pool=pool)

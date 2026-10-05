@@ -158,3 +158,31 @@ def test_issues_and_confidence_grouped_by_facet() -> None:
     assert "### Достоверность по граням" in output
     assert "| Методология | 50% |" in output
     assert "#### Риски (1)" in output and "#### Методология (1)" in output
+
+
+def test_related_documents_exclude_cited_and_weak() -> None:
+    from bzpo.generation.approach import related_documents, render_related
+    from bzpo.search.query import SearchResult
+
+    def other(cid: str, title: str, score: float, text: str = "Критерии выбора CDP") -> SearchHit:
+        chunk = ChunkHit(cid, text, text, [1.0], 6, None, title, None, None, None, "open",
+                         "ИТК", None, "Выбор CDP")
+        return SearchHit(cid, score, score, (), {}, chunk)
+
+    cited = hit("a", "Проведено 47 интервью")
+    section = postprocess("- Проведено 47 интервью [1].", [Fragment(1, "methodology", cited,
+                                                                     "[1] x\nПроведено 47 интервью")],
+                          ApproachRequest("Диагностика"))
+    results = {
+        "methodology": SearchResult("q", "v", [cited], [], False,
+                                    pool=[cited, other("b", "КП ИТК", 0.62)]),
+        "risks": SearchResult("q", "v", [], [], False,
+                              pool=[other("c", "КП ИТК", 0.40), other("d", "Мусор", 0.01)]),
+    }
+    related = related_documents(results, section)
+    assert [d.title for d in related] == ["КП ИТК"]  # процитированный и мусор отсеяны
+    assert related[0].facets == ["methodology", "risks"]
+    text = render_related(related)
+    assert "**КП ИТК** · проект «Выбор CDP» · заказчик: ИТК" in text
+    assert "слайд 6 — Критерии выбора CDP (оценка 0.62)" in text
+    assert "других документов" in render_related([])

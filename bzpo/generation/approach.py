@@ -23,6 +23,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from bzpo.generation.tables import linearize_wide_tables
 from bzpo.generation.validate import check_numbers
@@ -348,6 +349,67 @@ def render(section: Section) -> str:
             if group:
                 lines += ["", f"#### {facet_label(facet)} ({len(group)})"]
                 lines += [f"- {issue.message}" for issue in group]
+    return "\n".join(lines)
+
+
+# Ниже этой оценки реранкера фрагмент по сути нерелевантен (мусор добора — 0,002–0,05).
+RELATED_MIN_RERANK = 0.25
+RELATED_LIMIT = 3
+
+
+@dataclass(frozen=True, slots=True)
+class RelatedDocument:
+    """Документ, который поиск нашёл, но в черновике не процитирован."""
+
+    title: str
+    project: str | None
+    customer: str | None
+    facets: list[str]  # грани, по которым он нашёлся, по убыванию оценки
+    best: SearchHit
+
+
+def related_documents(
+    results: Mapping[str, Any], section: Section, *, limit: int = RELATED_LIMIT,
+    min_rerank: float = RELATED_MIN_RERANK,
+) -> list[RelatedDocument]:
+    """До `limit` документов вне черновика с заметной опорой поиска.
+
+    Обоснование собирает код, не модель: грани, по которым документ нашёлся, и
+    его лучший фрагмент. Так в подборке нет выдуманного «там может быть».
+    """
+    by_number = {f.number: f for f in section.fragments}
+    cited = {(by_number[n].hit.chunk.doc_title, by_number[n].hit.chunk.project)
+             for n in section.cited}
+    found: dict[tuple[str, str | None], dict[str, SearchHit]] = {}
+    for facet, result in results.items():
+        for hit in getattr(result, "pool", None) or result.hits:
+            key = (hit.chunk.doc_title, hit.chunk.project)
+            if key in cited or hit.rerank_score < min_rerank:
+                continue
+            best = found.setdefault(key, {})
+            if facet not in best or hit.rerank_score > best[facet].rerank_score:
+                best[facet] = hit
+    documents = []
+    for (title, project), per_facet in found.items():
+        facets = sorted(per_facet, key=lambda f: -per_facet[f].rerank_score)
+        top = per_facet[facets[0]]
+        documents.append(RelatedDocument(title, project, top.customer, facets, top))
+    documents.sort(key=lambda d: (-d.best.rerank_score, -len(d.facets)))
+    return documents[:limit]
+
+
+def render_related(documents: Sequence[RelatedDocument]) -> str:
+    lines = ["### Может пригодиться",
+             "Документы, которые поиск нашёл по граням подхода, но в черновик они не вошли."]
+    if not documents:
+        return "\n".join([*lines, "", "— других документов с заметной опорой поиска нет."])
+    for d in documents:
+        facets = ", ".join(f"«{facet_label(f)}»" for f in d.facets)
+        heading = _short(d.best.chunk.text_raw.split("\n", 1)[0], 100)
+        lines += ["", f"**{d.title}** · проект «{d.project}» · заказчик: {d.customer}",
+                  f"- нашёлся по граням {facets}",
+                  f"- ближе всего: {d.best.chunk.locator} — {heading} "
+                  f"(оценка {d.best.rerank_score:.2f})"]
     return "\n".join(lines)
 
 

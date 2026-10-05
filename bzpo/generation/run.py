@@ -31,7 +31,9 @@ from bzpo.generation.approach import (
     build_prompt,
     facet_queries,
     postprocess,
+    related_documents,
     render,
+    render_related,
 )
 from bzpo.providers.ollama import OllamaClient
 from bzpo.search.query import SearchResult, search
@@ -152,6 +154,7 @@ def generate_approach(
                      "быть неполным.")
     if not_found:
         markdown += "\n\n### Не найдено в корпусе\n" + "\n".join(f"- грань {f}" for f in not_found)
+    markdown += "\n\n" + render_related(related_documents(facets, section))
     return ApproachRun(
         request, mode, facets, section, markdown, not_found, search_seconds,
         time.perf_counter() - started - search_seconds,
