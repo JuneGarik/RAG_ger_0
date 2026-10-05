@@ -447,3 +447,25 @@ def list_documents(conn: Any, version: str | None) -> list[DocumentInfo]:
         (version,),
     ).fetchall()
     return [DocumentInfo(str(r[0]), *r[1:]) for r in rows]
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkView:
+    ord: int
+    page: int | None
+    section_title: str | None
+    subsection_title: str | None
+    text_raw: str
+    text_enriched: str
+    token_count: int | None
+    is_table: bool
+
+
+def document_chunks(conn: Any, doc_id: str, version: str | None) -> list[ChunkView]:
+    """Все фрагменты документа в версии индекса, по порядку, — для просмотра."""
+    rows = conn.execute(
+        "SELECT ord, page_start, section_title, subsection_title, text_raw, text_enriched, "
+        "token_count, is_table FROM chunks WHERE doc_id = %s AND index_version = %s ORDER BY ord",
+        (doc_id, version),
+    ).fetchall()
+    return [ChunkView(*r) for r in rows]

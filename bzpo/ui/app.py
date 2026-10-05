@@ -690,6 +690,40 @@ def tab_documents() -> None:
               "Фрагментов": d.chunks, "Статус": d.status} for d in documents],
             width="stretch", hide_index=True,
         )
+        show_chunks(documents)
+
+
+def show_chunks(documents: list[repo.DocumentInfo]) -> None:
+    """Фрагменты документа так, как их видят поиск и модель."""
+    st.subheader("Фрагменты")
+    indexed = [d for d in documents if d.chunks]
+    if not indexed:
+        return
+    chosen = st.selectbox("Документ", indexed, format_func=lambda d: f"{d.title} ({d.chunks})",
+                          index=None, placeholder="выберите документ", key="chunks_doc")
+    if chosen is None:
+        return
+    with connection() as conn:
+        chunks = repo.document_chunks(conn, chosen.doc_id, repo.active_index_version(conn))
+    query = st.text_input("Найти в тексте фрагментов", key="chunks_filter").strip().lower()
+    if query:
+        chunks = [c for c in chunks if query in c.text_raw.lower()]
+    tokens = [c.token_count or 0 for c in chunks]
+    if tokens:
+        st.caption(f"Показано {len(chunks)} · токенов: мин {min(tokens)}, "
+                   f"медиана {sorted(tokens)[len(tokens) // 2]}, макс {max(tokens)} · "
+                   f"таблиц {sum(c.is_table for c in chunks)}")
+    for c in chunks[:200]:
+        where = f"слайд {c.page}" if c.page is not None else (c.section_title or "без раздела")
+        marks = (" · таблица" if c.is_table else "") + (
+            " · рисунок" if "<!-- figure:" in c.text_raw else "")
+        title = c.text_raw.split("\n", 1)[0][:90]
+        with st.expander(f"#{c.ord} · {c.token_count} ток.{marks} · {where[:60]} — {title}"):
+            header = c.text_enriched.split("\n\n", 1)[0]
+            st.caption(f"Шапка (идёт в вектор вместе с текстом): {header}")
+            st.code(c.text_raw, language="markdown", wrap_lines=True)
+    if len(chunks) > 200:
+        st.caption(f"Показаны первые 200 из {len(chunks)} — сузьте поиском по тексту.")
 
 
 
