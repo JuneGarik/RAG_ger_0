@@ -580,7 +580,11 @@ def tab_documents() -> None:
         key = file_key(path.relative_to(DATA).as_posix())
         code, status = registry.get(key, (None, None))
         doc = in_db.get(key)
-        if doc and doc.chunks:
+        allowed = settings().search.allowed_publicity
+        if doc and doc.chunks and doc.publicity not in allowed:
+            state = (f"🔒 в базе ({doc.chunks} фрагм.), но скрыт: публичность «{doc.publicity}», "
+                     f"в поиск допускается {', '.join(allowed)}")
+        elif doc and doc.chunks:
             state = f"✅ в поиске ({doc.chunks} фрагм.)"
         elif code and problems.get(code):
             state = f"⛔ не готов к индексации: {len(problems[code])} — см. «Проверка строки»"
@@ -613,13 +617,38 @@ def tab_documents() -> None:
     with col3:
         st.write("")
         st.write("")
-        st.button("Проиндексировать", type="primary", disabled=busy,
-                  on_click=request, args=("index", "Индексация"))
+        if st.button("Открыть папку data/samples", disabled=busy):
+            subprocess.run(["open", str(SAMPLES)], check=False)
+
+    # Индексация выбранных документов: только проверенные строки реестра.
+    ready = []
+    if REGISTRY.exists():
+        for document in load_registry(REGISTRY, DATA).documents:
+            key = file_key(document.file.resolve().relative_to(DATA.resolve()).as_posix())
+            indexed = in_db.get(key)
+            ready.append((key, Path(key).name, bool(indexed and indexed.chunks)))
+    st.subheader("Индексация")
+    if not ready:
+        st.caption("Нет проверенных документов: сначала проверьте строку реестра ниже.")
+    else:
+        labels = {name + (" — уже в поиске" if done else ""): key for key, name, done in ready}
+        chosen = st.multiselect(
+            "Документы для индексации", list(labels),
+            default=[label for label, key in labels.items()
+                     if not any(k == key and done for k, _, done in ready)],
+            disabled=busy, key="index_selection",
+            help="Документ в поиске при повторной индексации пересчитается, только если "
+                 "его файл изменился.")
+        st.button("Проиндексировать выбранные", type="primary", disabled=busy or not chosen,
+                  on_click=request, args=("index", "Индексация"),
+                  kwargs={"files": [labels[label] for label in chosen]})
     status_line()
     show_command_log()
     execute("draft", lambda job: run_command(
         [*DRAFT, str(SAMPLES / job["file"])], "Черновик строки реестра"))
-    execute("index", lambda job: run_command(INGEST, "Загрузка реестра и индексация"))
+    execute("index", lambda job: run_command(
+        [*INGEST, *[arg for f in job.get("files", []) for arg in ("--file", f)]],
+        "Загрузка реестра и индексация"))
 
     if REGISTRY.exists():
         review_form(busy)

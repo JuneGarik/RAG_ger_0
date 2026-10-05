@@ -26,6 +26,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m bzpo.ingest")
     parser.add_argument("--registry", type=Path, default=Path("data/registry.xlsx"))
     parser.add_argument("--data-root", type=Path, default=Path("data"))
+    parser.add_argument("--file", action="append", default=None,
+                        help="индексировать только этот документ (путь от data/, например "
+                             "samples/отчёт.md); можно несколько раз")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -45,6 +48,17 @@ def main(argv: list[str] | None = None) -> int:
               f"{'; '.join(item['problems'])}")
 
     root = args.data_root.resolve()
+    if args.file:
+        # Реестр (проекты, публичность) загружается целиком, индексируются выбранные.
+        wanted = {file_key(f) for f in args.file}
+        chosen = [d for d in report.documents
+                  if file_key(d.file.resolve().relative_to(root).as_posix()) in wanted]
+        missing = wanted - {file_key(d.file.resolve().relative_to(root).as_posix())
+                            for d in chosen}
+        for key in sorted(missing):
+            print(f"  ✗ {key}: нет среди проверенных документов реестра")
+        report.documents = chosen
+        print(f"выбрано для индексации: {len(chosen)}")
     embedder = LocalEmbedder(settings.local)
     with repo.connect(settings.db.dsn.get_secret_value(), settings.db.statement_timeout_ms) as conn:
         upload_id = repo.save_registry(conn, report)

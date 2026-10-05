@@ -55,8 +55,11 @@ def save_registry(conn: Any, report: Any) -> uuid.UUID:
             aliases = [a for a in (project.client_contract,) if a and a != project.client]
             conn.execute(
                 "INSERT INTO clients (client_id, canonical_name, aliases) VALUES (%s, %s, %s) "
-                "ON CONFLICT (client_id) DO UPDATE SET aliases = (SELECT array_agg(DISTINCT a) "
-                "FROM unnest(clients.aliases || EXCLUDED.aliases) a)",
+                # array_agg от пустого набора — NULL, а не пустой массив: без COALESCE
+                # повторная загрузка заказчика без псевдонимов нарушает NOT NULL.
+                "ON CONFLICT (client_id) DO UPDATE SET aliases = COALESCE((SELECT "
+                "array_agg(DISTINCT a) FROM unnest(clients.aliases || EXCLUDED.aliases) a), "
+                "'{}')",
                 (client_id, project.client, aliases),
             )
             conn.execute(
@@ -364,6 +367,7 @@ class DocumentInfo:
     project: str
     customer: str | None
     chunks: int
+    publicity: str = "open"
 
 
 def list_documents(conn: Any, version: str | None) -> list[DocumentInfo]:
@@ -372,7 +376,7 @@ def list_documents(conn: Any, version: str | None) -> list[DocumentInfo]:
         """
         SELECT d.doc_id, d.title, d.file_path, d.doc_type, d.status, p.name,
                CASE WHEN p.publicity = 'anon' THEN p.anon_label ELSE cl.canonical_name END,
-               count(c.chunk_id)
+               count(c.chunk_id), p.publicity
         FROM documents d
         JOIN projects p ON p.project_id = d.project_id
         LEFT JOIN clients cl ON cl.client_id = p.client_id
@@ -382,4 +386,5 @@ def list_documents(conn: Any, version: str | None) -> list[DocumentInfo]:
         """,
         (version,),
     ).fetchall()
-    return [DocumentInfo(str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7]) for r in rows]
+    return [DocumentInfo(str(r[0]), r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8])
+            for r in rows]
