@@ -144,6 +144,11 @@ def _xml_slides(pptx: Path) -> list[tuple[list[str], list[str], int]]:
             for chart in re.findall(r'Target="\.\./charts/(chart\d+\.xml)"', rel_xml):
                 chart_xml = z.read(f"ppt/charts/{chart}").decode("utf-8")
                 values += _C_V.findall(chart_xml) + _A_T.findall(chart_xml)
+            # Заметки докладчика конвертер переносит в md («> **Заметки докладчика:**») —
+            # их числа законны; в полноту слайда заметки не входят.
+            for notes in re.findall(r'Target="\.\./notesSlides/(notesSlide\d+\.xml)"', rel_xml):
+                notes_xml = z.read(f"ppt/notesSlides/{notes}").decode("utf-8")
+                values += ["".join(_A_T.findall(p)) for p in _PARAGRAPH.findall(notes_xml)]
             images = xml.count("<p:pic>")
             result.append((paragraphs, values, images))
         return result

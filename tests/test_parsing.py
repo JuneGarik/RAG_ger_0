@@ -150,3 +150,15 @@ def test_linked_picture_does_not_crash(tmp_path: Path) -> None:
     prs.save(str(path))
     deck = extract(path)
     assert deck.slides[0].images and deck.slides[0].needs_vlm
+
+
+def test_numbers_from_speaker_notes_are_supported(tmp_path: Path) -> None:
+    from pptx import Presentation
+
+    path = build(tmp_path)
+    prs = Presentation(str(path))
+    prs.slides[0].notes_slide.notes_text_frame.text = "Школа 21 — обучение ИИ программам"
+    prs.save(str(path))
+    md = to_markdown(extract(path))
+    assert "Школа 21" in md  # заметки переносятся в md
+    assert check(path, md).unsupported == 0
