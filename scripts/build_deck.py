@@ -1,6 +1,7 @@
 """Презентация решения для управляющего комитета: python scripts/build_deck.py
 
-Собирает БЗПО_презентация_УК.pptx в корне репозитория. Стиль — как у отчётов
+Собирает data/БЗПО_презентация_УК.pptx (data/ вне git: в презентации замеры по
+документам заказчиков). Стиль — как у отчётов
 проекта (ДЕВ, «ОЦО Ритейл»): белый фон, заголовок-вывод с засечками, надпись
 раздела над ним, бирюзовые акценты, серая панель комментариев, источник внизу.
 Цифры на слайдах — замеры из тестирования (см. слайд «Метрики»); где цифра —
@@ -17,7 +18,7 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Emu, Inches, Pt
 
-OUT = Path(__file__).resolve().parents[1] / "БЗПО_презентация_УК.pptx"
+OUT = Path(__file__).resolve().parents[1] / "data" / "БЗПО_презентация_УК.pptx"
 
 TEAL = RGBColor(0x0E, 0xBE, 0xAD)
 TEAL_DARK = RGBColor(0x00, 0x8C, 0x82)

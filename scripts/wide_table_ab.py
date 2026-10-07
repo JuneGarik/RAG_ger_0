@@ -6,6 +6,7 @@
 """
 
 import json
+import os
 import random
 import re
 import sys
@@ -17,9 +18,11 @@ from bzpo.ingest.slides import chunk_slides
 from bzpo.providers.ollama import OllamaClient
 
 ROOT = Path(__file__).resolve().parent.parent
+# md отчёта с тепловой картой на слайде 34; имя файла заказчика в репозиторий не пишется.
+SAMPLE = Path(os.environ.get("BZPO_AB_SAMPLE", ROOT / "data/samples/report_dev.md"))
 REPEATS = int(sys.argv[1]) if len(sys.argv) > 1 else 2
 deck = chunk_slides(
-    (ROOT / "data/samples/report_dev.md").read_text(encoding="utf-8"),
+    SAMPLE.read_text(encoding="utf-8"),
     lambda s: len(s) // 4,
     hard_limit=8192,
 )

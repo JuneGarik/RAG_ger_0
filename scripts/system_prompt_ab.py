@@ -5,6 +5,7 @@
 Запуск: python scripts/system_prompt_ab.py [номера слайдов через запятую]
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -15,12 +16,14 @@ from bzpo.ingest.slides import chunk_slides
 from bzpo.providers.ollama import OllamaClient
 
 ROOT = Path(__file__).resolve().parent.parent
+# md отчёта с тепловой картой на слайде 34; имя файла заказчика в репозиторий не пишется.
+SAMPLE = Path(os.environ.get("BZPO_AB_SAMPLE", ROOT / "data/samples/report_dev.md"))
 SYSTEM = (ROOT / "bzpo/generation/prompts/section_system.txt").read_text(encoding="utf-8")
 PICK = [int(n) for n in sys.argv[1].split(",")] if len(sys.argv) > 1 else [33, 34, 86, 87]
 CUSTOMER = "ГК ДЕВ"
 
 deck = chunk_slides(
-    (ROOT / "data/samples/report_dev.md").read_text(encoding="utf-8"),
+    SAMPLE.read_text(encoding="utf-8"),
     lambda s: len(s) // 4,
     hard_limit=8192,
 )
